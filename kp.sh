@@ -1,0 +1,291 @@
+#!/bin/bash
+# Скрипт работы КП ВКО (Командный пункт)
+# Использование: ./kp.sh
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+check_environment
+check_single_instance "KP_VKO"
+trap "cleanup 'KP_VKO'; exit 0" SIGTERM SIGINT EXIT
+
+LOGFILE="$LOG_DIR/KP_VKO.log"
+SYSTEM_LOG="$LOG_DIR/system_journal.log"
+DB_FILE="$DB_DIR/vko.db"
+
+# Инициализация БД
+init_database
+
+echo "[КП ВКО] Запуск командного пункта ВКО"
+log_message "$LOGFILE" "KP_VKO" "Запуск КП ВКО"
+log_message "$SYSTEM_LOG" "KP_VKO" "=== Система ВКО запущена ==="
+
+# Список всех систем для мониторинга
+ALL_SYSTEMS=("$RLS1_NAME" "$RLS2_NAME" "$RLS3_NAME" "$ZRDN1_NAME" "$ZRDN2_NAME" "$ZRDN3_NAME" "$SPRO_NAME")
+
+declare -A system_status        # имя -> ONLINE/OFFLINE
+declare -A last_heartbeat       # имя -> timestamp
+declare -A reported_status      # имя_статус -> 1 (для недопущения дублирования)
+
+# Инициализация статусов
+for sys in "${ALL_SYSTEMS[@]}"; do
+    system_status[$sys]="UNKNOWN"
+    last_heartbeat[$sys]=0
+done
+
+last_heartbeat_check=0
+
+while true; do
+    current_time=$(date +%s)
+
+    # --- Обработка сообщений от всех систем ---
+    for msg_file in "$MSG_DIR/to_kp/"*; do
+        [[ -f "$msg_file" ]] || continue
+
+        encrypted=$(cat "$msg_file" 2>/dev/null)
+        decoded=$(decrypt_message "$encrypted")
+
+        if [[ "$decoded" == "ERROR_HMAC" || "$decoded" == "ERROR_DECRYPT" ]]; then
+            log_message "$LOGFILE" "KP_VKO" "ПОПЫТКА НСД! Подменённое сообщение в файле $(basename "$msg_file")"
+            log_message "$SYSTEM_LOG" "KP_VKO" "ПОПЫТКА НСД! Подменённое сообщение"
+            db_insert "INSERT INTO nsd_log (timestamp, system_name, details) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', 'KP_VKO', 'Подменённое сообщение: $(basename "$msg_file")');"
+            rm -f "$msg_file"
+            continue
+        fi
+
+        # Извлекаем имя системы из имени файла
+        sender=$(basename "$msg_file" | cut -d'_' -f1-2)
+        # Для трёхсловных имён (ZRDN1_Orenburg и т.п.)
+        if [[ "$sender" != *"_"* ]]; then
+            sender=$(basename "$msg_file" | cut -d'_' -f1)
+        fi
+
+        # Парсинг сообщений
+        msg_type=$(echo "$decoded" | awk '{print $1}')
+        timestamp=$(date +"%d.%m %H:%M:%S:%3N")
+
+        case "$msg_type" in
+            STATUS)
+                sys_name=$(echo "$decoded" | awk '{print $2}')
+                status=$(echo "$decoded" | awk '{print $3}')
+                ammo_info=$(echo "$decoded" | grep -o 'AMMO:[0-9]*' || true)
+
+                if [[ "${system_status[$sys_name]}" != "$status" ]]; then
+                    system_status[$sys_name]="$status"
+                    log_msg="$sys_name статус: $status $ammo_info"
+                    log_message "$LOGFILE" "KP_VKO" "$log_msg"
+                    log_message "$SYSTEM_LOG" "$sys_name" "статус: $status $ammo_info"
+                    echo "[КП] $log_msg"
+
+                    db_insert "INSERT INTO system_status (timestamp, system_name, status, ammo_left) VALUES ('$timestamp', '$sys_name', '$status', $(echo "$ammo_info" | grep -o '[0-9]*' || echo 'NULL'));"
+                    db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys_name', 'STATUS', '$log_msg');"
+                fi
+                ;;
+
+            DETECT)
+                target_id=$(echo "$decoded" | awk '{print $2}')
+                tx=$(echo "$decoded" | awk '{print $3}')
+                ty=$(echo "$decoded" | awk '{print $4}')
+                target_type=$(echo "$decoded" | awk '{print $5}')
+                speed=$(echo "$decoded" | awk '{print $6}')
+
+                # Определяем отправителя по файлу
+                for sys in "${ALL_SYSTEMS[@]}"; do
+                    if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
+                        sender="$sys"
+                        break
+                    fi
+                done
+
+                log_msg="Обнаружена цель id:$target_id координаты X:$tx Y:$ty тип:$target_type скорость:$speed"
+                log_message "$LOGFILE" "KP_VKO" "от $sender: $log_msg"
+                log_message "$SYSTEM_LOG" "$sender" "$log_msg"
+                echo "[КП от $sender] $log_msg"
+
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_x, target_y, target_type, message) VALUES ('$timestamp', '$sender', 'DETECT', '$target_id', ${tx:-0}, ${ty:-0}, '$target_type', '$log_msg');"
+                ;;
+
+            SPRO_ALERT)
+                target_id=$(echo "$decoded" | awk '{print $2}')
+                tx=$(echo "$decoded" | awk '{print $3}')
+                ty=$(echo "$decoded" | awk '{print $4}')
+
+                for sys in "${ALL_SYSTEMS[@]}"; do
+                    if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
+                        sender="$sys"
+                        break
+                    fi
+                done
+
+                log_msg="цель движется в направлении СПРО id:$target_id"
+                log_message "$LOGFILE" "KP_VKO" "от $sender: $log_msg"
+                log_message "$SYSTEM_LOG" "$sender" "$log_msg"
+                echo "[КП от $sender] !!! $log_msg !!!"
+
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_x, target_y, target_type, message) VALUES ('$timestamp', '$sender', 'SPRO_ALERT', '$target_id', ${tx:-0}, ${ty:-0}, 'BB_BR', '$log_msg');"
+                ;;
+
+            SHOT)
+                target_id=$(echo "$decoded" | awk '{print $2}')
+                target_type=$(echo "$decoded" | awk '{print $3}')
+                ammo_info=$(echo "$decoded" | grep -o 'AMMO:[0-9]*' || true)
+
+                for sys in "${ALL_SYSTEMS[@]}"; do
+                    if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
+                        sender="$sys"
+                        break
+                    fi
+                done
+
+                log_msg="Стрельба по цели id:$target_id тип:$target_type $ammo_info"
+                log_message "$LOGFILE" "KP_VKO" "от $sender: $log_msg"
+                log_message "$SYSTEM_LOG" "$sender" "$log_msg"
+                echo "[КП от $sender] $log_msg"
+
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_type, message) VALUES ('$timestamp', '$sender', 'SHOT', '$target_id', '$target_type', '$log_msg');"
+                ;;
+
+            DESTROYED)
+                target_id=$(echo "$decoded" | awk '{print $2}')
+                target_type=$(echo "$decoded" | awk '{print $3}')
+
+                for sys in "${ALL_SYSTEMS[@]}"; do
+                    if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
+                        sender="$sys"
+                        break
+                    fi
+                done
+
+                log_msg="Цель id:$target_id УНИЧТОЖЕНА ($target_type)"
+                log_message "$LOGFILE" "KP_VKO" "от $sender: $log_msg"
+                log_message "$SYSTEM_LOG" "$sender" "$log_msg"
+                echo "[КП от $sender] >>> $log_msg <<<"
+
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_type, message) VALUES ('$timestamp', '$sender', 'DESTROYED', '$target_id', '$target_type', '$log_msg');"
+                ;;
+
+            MISS)
+                target_id=$(echo "$decoded" | awk '{print $2}')
+                target_type=$(echo "$decoded" | awk '{print $3}')
+
+                for sys in "${ALL_SYSTEMS[@]}"; do
+                    if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
+                        sender="$sys"
+                        break
+                    fi
+                done
+
+                log_msg="ПРОМАХ по цели id:$target_id ($target_type)"
+                log_message "$LOGFILE" "KP_VKO" "от $sender: $log_msg"
+                log_message "$SYSTEM_LOG" "$sender" "$log_msg"
+                echo "[КП от $sender] $log_msg"
+
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_type, message) VALUES ('$timestamp', '$sender', 'MISS', '$target_id', '$target_type', '$log_msg');"
+                ;;
+
+            AMMO_EMPTY)
+                sys_name=$(echo "$decoded" | awk '{print $2}')
+
+                log_msg="$sys_name: боекомплект исчерпан!"
+                log_message "$LOGFILE" "KP_VKO" "$log_msg"
+                log_message "$SYSTEM_LOG" "$sys_name" "Боекомплект исчерпан! Режим обнаружения"
+                echo "[КП] !!! $log_msg !!!"
+
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys_name', 'AMMO_EMPTY', '$log_msg');"
+                db_insert "INSERT INTO system_status (timestamp, system_name, status, ammo_left) VALUES ('$timestamp', '$sys_name', 'AMMO_EMPTY', 0);"
+                ;;
+
+            REFILL)
+                sys_name=$(echo "$decoded" | awk '{print $2}')
+                ammo_info=$(echo "$decoded" | grep -o 'AMMO:[0-9]*' || true)
+
+                log_msg="$sys_name: боекомплект пополнен $ammo_info"
+                log_message "$LOGFILE" "KP_VKO" "$log_msg"
+                log_message "$SYSTEM_LOG" "$sys_name" "Боекомплект пополнен $ammo_info"
+                echo "[КП] $log_msg"
+
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys_name', 'REFILL', '$log_msg');"
+                ;;
+
+            NSD)
+                sys_name=$(echo "$decoded" | awk '{print $2}')
+                details=$(echo "$decoded" | cut -d' ' -f3-)
+
+                log_msg="НСД от $sys_name: $details"
+                log_message "$LOGFILE" "KP_VKO" "$log_msg"
+                log_message "$SYSTEM_LOG" "KP_VKO" "!!! $log_msg !!!"
+                echo "[КП] !!! ПОПЫТКА НСД: $log_msg !!!"
+
+                db_insert "INSERT INTO nsd_log (timestamp, system_name, details) VALUES ('$timestamp', '$sys_name', '$details');"
+                db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys_name', 'NSD', '$log_msg');"
+                ;;
+
+            *)
+                log_message "$LOGFILE" "KP_VKO" "Неизвестное сообщение: $decoded"
+                ;;
+        esac
+
+        rm -f "$msg_file"
+    done
+
+    # --- Проверка работоспособности систем (heartbeat) ---
+    if (( current_time - last_heartbeat_check >= HEARTBEAT_INTERVAL )); then
+        last_heartbeat_check=$current_time
+
+        for sys in "${ALL_SYSTEMS[@]}"; do
+            # Отправить запрос heartbeat
+            touch "$MSG_DIR/heartbeat/${sys}_request"
+        done
+
+        # Подождать ответы (1 секунду)
+        sleep 1
+
+        timestamp=$(date +"%d.%m %H:%M:%S:%3N")
+        for sys in "${ALL_SYSTEMS[@]}"; do
+            response_file="$MSG_DIR/heartbeat/${sys}_response"
+            status_key="${sys}_status"
+
+            if [[ -f "$response_file" ]]; then
+                encrypted=$(cat "$response_file" 2>/dev/null)
+                decoded=$(decrypt_message "$encrypted")
+
+                if [[ "$decoded" == "ERROR_HMAC" ]]; then
+                    log_message "$LOGFILE" "KP_VKO" "ПОПЫТКА НСД в heartbeat от $sys"
+                    db_insert "INSERT INTO nsd_log (timestamp, system_name, details) VALUES ('$timestamp', '$sys', 'Поддельный heartbeat');"
+                fi
+
+                rm -f "$response_file"
+                last_heartbeat[$sys]=$current_time
+
+                if [[ "${system_status[$sys]}" != "ONLINE" ]]; then
+                    system_status[$sys]="ONLINE"
+                    if [[ "${reported_status[$status_key]}" != "ONLINE" ]]; then
+                        log_msg="$sys работоспособность восстановлена"
+                        log_message "$SYSTEM_LOG" "$sys" "работоспособность восстановлена"
+                        log_message "$LOGFILE" "KP_VKO" "$log_msg"
+                        echo "[КП] $log_msg"
+                        db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys', 'HEARTBEAT', '$log_msg');"
+                        db_insert "INSERT INTO system_status (timestamp, system_name, status) VALUES ('$timestamp', '$sys', 'ONLINE');"
+                        reported_status[$status_key]="ONLINE"
+                    fi
+                fi
+            else
+                # Нет ответа
+                if [[ "${system_status[$sys]}" != "OFFLINE" ]]; then
+                    system_status[$sys]="OFFLINE"
+                    if [[ "${reported_status[$status_key]}" != "OFFLINE" ]]; then
+                        log_msg="$sys НЕ ОТВЕЧАЕТ! Связь потеряна"
+                        log_message "$SYSTEM_LOG" "$sys" "НЕ ОТВЕЧАЕТ! Связь потеряна"
+                        log_message "$LOGFILE" "KP_VKO" "$log_msg"
+                        echo "[КП] !!! $log_msg !!!"
+                        db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys', 'HEARTBEAT', '$log_msg');"
+                        db_insert "INSERT INTO system_status (timestamp, system_name, status) VALUES ('$timestamp', '$sys', 'OFFLINE');"
+                        reported_status[$status_key]="OFFLINE"
+                    fi
+                fi
+            fi
+        done
+    fi
+
+    sleep "$CHECK_INTERVAL"
+done
