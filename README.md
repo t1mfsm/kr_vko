@@ -18,6 +18,15 @@ sudo apt update && sudo apt install -y sqlite3 bc openssl xxd
 sudo yum install -y sqlite bc openssl vim-common
 ```
 
+## Быстрый старт
+
+```bash
+git clone git@github.com-AntonA22:AntonA22/kr_vko.git
+cd kr_vko
+chmod +x *.sh
+./start.sh    # создаст папки и запустит всё
+```
+
 ## Пошаговый запуск
 
 ### Шаг 1. Перенести файлы на Linux
