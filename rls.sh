@@ -1,6 +1,4 @@
 #!/bin/bash
-# Скрипт работы РЛС СПРН
-# Использование: ./rls.sh <номер_рлс> (1, 2 или 3)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/common.sh"

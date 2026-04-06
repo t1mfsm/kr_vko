@@ -1,169 +1,174 @@
-# Имитационная модель работы ВКО
+# Имитационная модель ВКО
+
+Проект моделирует работу системы ВКО в Bash под Linux с использованием генератора целей, РЛС, СПРО, зрдн, командного пункта и SQLite-базы для журналов и статистики.
+
+## Вариант
+
+- РЛС1: Минск, `Дарьял`, дальность `6000 км`, сектор `90°`, азимут `135°`
+- РЛС2: `x=7000 км`, `y=3000 км`, `Днепр`, дальность `3500 км`, сектор `120°`, азимут `45°`
+- РЛС3: Казань, `Воронеж-ДМ`, дальность `4000 км`, сектор `200°`, азимут `225°`
+- зрдн1: Крым, радиус `650 км`
+- зрдн2: Петрозаводск, радиус `400 км`
+- зрдн3: Уфа, радиус `550 км`
+- СПРО: Новосибирск, радиус `800 км`
+
+## Состав проекта
+
+- [GenTargets.sh](/C:/kr_vko/GenTargets.sh) - генератор целей
+- [config.sh](/C:/kr_vko/config.sh) - параметры варианта и общие настройки
+- [common.sh](/C:/kr_vko/common.sh) - общие функции
+- [rls.sh](/C:/kr_vko/rls.sh) - работа РЛС
+- [spro.sh](/C:/kr_vko/spro.sh) - работа СПРО
+- [zrdn.sh](/C:/kr_vko/zrdn.sh) - работа зрдн
+- [kp.sh](/C:/kr_vko/kp.sh) - командный пункт
+- [start.sh](/C:/kr_vko/start.sh) - запуск системы
+- [stop.sh](/C:/kr_vko/stop.sh) - остановка системы
+- [db_queries.sh](/C:/kr_vko/db_queries.sh) - SQL-статистика
+- [map.png](/C:/kr_vko/map.png) - карта варианта
 
 ## Требования
-- Linux (Ubuntu/Debian/CentOS)
-- Bash 4+
-- sqlite3
-- bc
-- openssl
-- xxd (входит в vim-common)
 
-## Установка зависимостей (если не установлены)
+- Linux
+- Bash
+- `sqlite3`
+- `bc`
+- `openssl`
+- `xxd`
 
-```bash
-# Ubuntu/Debian:
-sudo apt update && sudo apt install -y sqlite3 bc openssl xxd
-
-# CentOS/RHEL:
-sudo yum install -y sqlite bc openssl vim-common
-```
-
-## Быстрый старт
+Для Ubuntu:
 
 ```bash
-git clone git@github.com-AntonA22:AntonA22/kr_vko.git
-cd kr_vko
-chmod +x *.sh
-./start.sh    # создаст папки и запустит всё
+sudo apt update
+sudo apt install -y sqlite3 bc openssl xxd
 ```
 
-## Пошаговый запуск
+## Подготовка
 
-### Шаг 1. Перенести файлы на Linux
-
-На Mac создать архив:
-```bash
-cd ~/Desktop/институт/доп\ курсы/kr_vko
-tar czf kr_vko.tar.gz ./*
-```
-
-На Linux распаковать:
-```bash
-mkdir -p ~/kr_vko && cd ~/kr_vko
-# скопировать архив сюда (scp, флешка и т.п.)
-tar xzf kr_vko.tar.gz
-```
-
-### Шаг 2. Сделать скрипты исполняемыми
+После переноса проекта в Ubuntu:
 
 ```bash
 cd ~/kr_vko
+find . -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
 chmod +x *.sh
 ```
 
-### Шаг 3. Запустить всю систему
+## Запуск
+
+Полный запуск всей системы:
 
 ```bash
 ./start.sh
 ```
 
-Система запустится в следующем порядке:
-1. Генератор целей (`GenTargets.sh`)
-2. Командный пункт (`kp.sh`)
+Скрипт запускает:
+
+1. генератор целей
+2. КП ВКО
 3. РЛС1, РЛС2, РЛС3
 4. СПРО
-5. ЗРДН1, ЗРДН2, ЗРДН3
+5. зрдн1, зрдн2, зрдн3
 
-### Шаг 4. Наблюдать за работой
-
-Журнал всей системы в реальном времени:
-```bash
-tail -f logs/system_journal.log
-```
-
-Журнал конкретного элемента:
-```bash
-tail -f logs/RLS1_Voronezh.log
-tail -f logs/SPRO_Omsk.log
-tail -f logs/ZRDN1_Orenburg.log
-tail -f logs/KP_VKO.log
-```
-
-Генератор целей с картой:
-```bash
-# В отдельном терминале можно запустить генератор с визуализацией:
-# (сначала остановить текущий генератор)
-./stop.sh gen
-bash GenTargets.sh map
-```
-
-### Шаг 5. Посмотреть статистику (SQL-запросы к БД)
+Запуск отдельного компонента:
 
 ```bash
-./db_queries.sh
+./start.sh gen
+./start.sh kp
+./start.sh rls1
+./start.sh rls2
+./start.sh rls3
+./start.sh spro
+./start.sh zrdn1
+./start.sh zrdn2
+./start.sh zrdn3
 ```
 
-Выводит:
-1. Остаток боеприпасов у ЗРДН и СПРО
-2. Количество уничтоженных целей по системам
-3. Самая результативная система
-4. Самая меткая система (% попаданий)
-5. Последние обнаруженные цели
-6. Цели, двигавшиеся в направлении СПРО
-7. Промахи
-8. Попытки НСД
-9. Общая статистика
-10. Уничтожено ЗРДН за последний час
+## Остановка
 
-Ручные запросы к БД:
-```bash
-sqlite3 db/vko.db "SELECT * FROM journal ORDER BY id DESC LIMIT 10;"
-sqlite3 db/vko.db "SELECT * FROM shots;"
-```
-
-### Шаг 6. Остановить систему
+Остановить всю систему:
 
 ```bash
 ./stop.sh
 ```
 
-## Управление отдельными компонентами
+Остановить отдельный компонент:
 
 ```bash
-# Запуск одного компонента:
-./start.sh gen       # генератор целей
-./start.sh kp        # командный пункт
-./start.sh rls1      # РЛС1 (Кишинев)
-./start.sh rls2      # РЛС2
-./start.sh rls3      # РЛС3 (Иркутск)
-./start.sh zrdn1     # ЗРДН1 (Оренбург)
-./start.sh zrdn2     # ЗРДН2 (Волгоград)
-./start.sh zrdn3     # ЗРДН3 (Махачкала)
-./start.sh spro      # СПРО (Омск)
-
-# Остановка одного компонента:
+./stop.sh gen
+./stop.sh kp
 ./stop.sh rls1
+./stop.sh rls2
+./stop.sh rls3
+./stop.sh spro
+./stop.sh zrdn1
 ./stop.sh zrdn2
+./stop.sh zrdn3
 ```
 
-## Структура файлов
+## Журналы
 
-```
-kr_vko/
-├── GenTargets.sh      - генератор целей
-├── config.sh          - конфигурация (координаты, ТТХ)
-├── common.sh          - общие функции
-├── rls.sh             - скрипт РЛС (параметр: 1/2/3)
-├── spro.sh            - скрипт СПРО
-├── zrdn.sh            - скрипт ЗРДН (параметр: 1/2/3)
-├── kp.sh              - командный пункт
-├── start.sh           - запуск системы
-├── stop.sh            - остановка системы
-├── db_queries.sh      - статистика из БД
-├── db/vko.db          - база данных SQLite
-├── logs/              - журналы работы
-├── messages/          - обмен сообщениями
-└── pids/              - PID-файлы
+Основной журнал:
+
+```bash
+tail -f logs/system_journal.log
 ```
 
-## Вариант
+Примеры журналов компонентов:
 
-| Система | Город | Тип | Параметры |
-|---------|-------|-----|-----------|
-| РЛС1 | Кишинев | Воронеж-ДМ | 4000 км, 200°, напр. 225° |
-| РЛС2 | x=8000 y=7000 | Дарьял | 6000 км, 90°, напр. 45° |
-| РЛС3 | Иркутск | Днепр | 3500 км, 120°, напр. 270° |
-| ЗРДН1 | Оренбург | — | r=600 км, 20 ракет |
-| ЗРДН2 | Волгоград | — | r=400 км, 20 ракет |
-| ЗРДН3 | Махачкала | — | r=550 км, 20 ракет |
-| СПРО | Омск | — | r=1500 км, 10 противоракет |
+```bash
+tail -f logs/KP_VKO.log
+tail -f logs/RLS1_Daryal_Minsk.log
+tail -f logs/RLS2_Dnepr.log
+tail -f logs/RLS3_Voronezh_Kazan.log
+tail -f logs/SPRO_Novosibirsk.log
+tail -f logs/ZRDN1_Crimea.log
+tail -f logs/ZRDN2_Petrozavodsk.log
+tail -f logs/ZRDN3_Ufa.log
+```
+
+## База данных и статистика
+
+Файл базы данных создаётся автоматически:
+
+```bash
+db/vko.db
+```
+
+Запуск готовых SQL-запросов:
+
+```bash
+./db_queries.sh
+```
+
+Примеры ручных запросов:
+
+```bash
+sqlite3 db/vko.db "SELECT * FROM journal ORDER BY id DESC LIMIT 20;"
+sqlite3 db/vko.db "SELECT * FROM shots ORDER BY id DESC LIMIT 20;"
+sqlite3 db/vko.db "SELECT * FROM nsd_log ORDER BY id DESC LIMIT 20;"
+```
+
+## Что делает система
+
+- РЛС обнаруживают цели в своих секторах обзора
+- тип цели определяется по скорости на второй засечке
+- РЛС сообщают на КП об обнаружении и о движении ББ в сторону СПРО
+- СПРО уничтожает только баллистические цели
+- зрдн уничтожают самолёты и крылатые ракеты
+- КП собирает журналы, ведёт БД и проверяет работоспособность элементов через heartbeat
+- сообщения между элементами защищаются HMAC-подписью
+- при исчерпании боекомплекта предусмотрено автопополнение
+
+## Полезно для проверки
+
+Если после переноса с Windows скрипты не запускаются:
+
+```bash
+find . -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
+chmod +x *.sh
+```
+
+Если нужно проверить синтаксис:
+
+```bash
+find . -type f -name "*.sh" -exec bash -n {} \;
+```

@@ -1,6 +1,4 @@
 #!/bin/bash
-# Скрипт работы КП ВКО (Командный пункт)
-# Использование: ./kp.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/common.sh"

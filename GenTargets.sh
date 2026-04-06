@@ -1,5 +1,4 @@
 #!/bin/bash
-# Version 3.1
 (( BASH_VERSINFO[0] < 4 )) && exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

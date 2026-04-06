@@ -1,5 +1,4 @@
 #!/bin/bash
-# Общие функции для всех элементов системы ВКО
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 

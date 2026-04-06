@@ -1,6 +1,4 @@
 #!/bin/bash
-# Запросы к БД для вывода статистики работы системы ВКО
-# Использование: ./db_queries.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
@@ -18,7 +16,6 @@ echo "  Статистика работы системы ВКО"
 echo "========================================="
 echo ""
 
-# 1. Сколько осталось БП у всех ЗРДН
 echo "--- 1. Остаток боеприпасов у ЗРДН и СПРО ---"
 sqlite3 -header -column "$DB_FILE" "
 WITH ammo_limits AS (
@@ -55,7 +52,6 @@ ORDER BY ammo_limits.system_name;
 "
 echo ""
 
-# 2. Сколько каждая система сбила целей
 echo "--- 2. Количество уничтоженных целей по системам ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
@@ -67,7 +63,6 @@ ORDER BY COUNT(*) DESC;
 "
 echo ""
 
-# 3. Кто сбил больше всего целей
 echo "--- 3. Самая результативная система ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
@@ -80,7 +75,6 @@ LIMIT 1;
 "
 echo ""
 
-# 4. Самый меткий (наибольший процент попаданий)
 echo "--- 4. Самая меткая система (процент попаданий) ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
@@ -94,7 +88,6 @@ ORDER BY ROUND(100.0 * SUM(CASE WHEN result='DESTROYED' THEN 1 ELSE 0 END) / COU
 "
 echo ""
 
-# 5. Видимые цели всеми системами (последние обнаружения)
 echo "--- 5. Последние обнаруженные цели ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
@@ -110,7 +103,6 @@ LIMIT 20;
 "
 echo ""
 
-# 6. Сколько целей двигалось в сторону СПРО
 echo "--- 6. Цели, двигавшиеся в направлении СПРО ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Обнаружено',
@@ -124,7 +116,6 @@ ORDER BY id DESC;
 "
 echo ""
 
-# 7. Все промахи
 echo "--- 7. Промахи ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
@@ -138,7 +129,6 @@ LIMIT 20;
 "
 echo ""
 
-# 8. Попытки НСД
 echo "--- 8. Попытки несанкционированного доступа ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
@@ -150,7 +140,6 @@ LIMIT 10;
 "
 echo ""
 
-# 9. Общая статистика
 echo "--- 9. Общая статистика ---"
 echo -n "Всего событий в журнале: "
 sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM journal;"
@@ -164,7 +153,6 @@ echo -n "Попыток НСД: "
 sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM nsd_log;"
 echo ""
 
-# 10. Сколько ЗРДН сбили за последний час
 echo "--- 10. Уничтожено ЗРДН за последний час ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',

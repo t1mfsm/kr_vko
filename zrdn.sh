@@ -1,6 +1,4 @@
 #!/bin/bash
-# Скрипт работы ЗРДН (зенитно-ракетный дивизион)
-# Использование: ./zrdn.sh <номер_зрдн> (1, 2 или 3)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -14,7 +12,6 @@ if [[ "$ZRDN_NUM" != "1" && "$ZRDN_NUM" != "2" && "$ZRDN_NUM" != "3" ]]; then
     exit 1
 fi
 
-# Загрузка параметров
 eval "ZRDN_NAME=\$ZRDN${ZRDN_NUM}_NAME"
 eval "ZRDN_X=\$ZRDN${ZRDN_NUM}_X"
 eval "ZRDN_Y=\$ZRDN${ZRDN_NUM}_Y"
