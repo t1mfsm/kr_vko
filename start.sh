@@ -19,6 +19,12 @@ if [[ -z "$BASH_VERSION" ]]; then
     exit 1
 fi
 
+# Проверка Linux
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "ОШИБКА: Запуск разрешен только в Linux. Текущая ОС: $(uname -s)" >&2
+    exit 1
+fi
+
 # Создание директорий
 mkdir -p "$DB_DIR" "$LOG_DIR" "$MSG_DIR/to_kp" "$MSG_DIR/from_kp" "$MSG_DIR/heartbeat" "$TEMP_DIR" "$PID_DIR"
 mkdir -p /tmp/GenTargets/Targets /tmp/GenTargets/Destroy
@@ -38,7 +44,6 @@ start_component() {
             echo "[*] Запуск генератора целей..."
             chmod +x "$SCRIPT_DIR/GenTargets.sh"
             bash "$SCRIPT_DIR/GenTargets.sh" &
-            echo $! > "$PID_DIR/GenTargets.pid"
             echo "[+] Генератор целей запущен (PID: $!)"
             ;;
         kp)
@@ -96,6 +101,13 @@ else
     echo "  Запуск системы ВКО"
     echo "========================================="
     echo ""
+
+    # Чистый запуск всей системы: новая БД и пустые очереди сообщений
+    rm -f "$DB_DIR/vko.db"
+    rm -f "$MSG_DIR/to_kp/"* 2>/dev/null
+    rm -f "$MSG_DIR/from_kp/"* 2>/dev/null
+    rm -f "$MSG_DIR/heartbeat/"* 2>/dev/null
+    init_database
 
     # Порядок запуска: генератор -> КП -> РЛС -> СПРО -> ЗРДН
     start_component gen

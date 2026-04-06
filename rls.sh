@@ -36,7 +36,6 @@ log_message "$LOGFILE" "$RLS_NAME" "Запуск РЛС типа $RLS_TYPE. Ко
 send_to_kp "$RLS_NAME" "STATUS $RLS_NAME ONLINE"
 
 # Ассоциативные массивы для отслеживания целей
-declare -A first_detection    # ID -> "X Y" (координаты первой засечки)
 declare -A reported_targets   # ID -> 1 (уже доложенные цели)
 declare -A reported_spro      # ID -> 1 (уже доложенные о движении к СПРО)
 
@@ -55,45 +54,36 @@ while true; do
         if [[ "$decoded" == "ERROR_HMAC" ]]; then
             log_message "$LOGFILE" "$RLS_NAME" "ПОПЫТКА НСД! Поддельное сообщение от КП"
             send_to_kp "$RLS_NAME" "NSD $RLS_NAME Обнаружена попытка подмены сообщения"
-            db_insert "INSERT INTO nsd_log (timestamp, system_name, details) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$RLS_NAME', 'Поддельное сообщение от КП');"
         fi
         rm -f "$msg_file"
     done
 
     # Сканирование целей
     declare -A current_targets
+    declare -A current_target_mtimes
 
-    for f in "$TARGETS_DIR"/*; do
-        [[ -f "$f" ]] || continue
-        target_id=$(decode_target_id "$f")
+    while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
-
-        coords=$(read_target_coords "$f")
-        [[ -z "$coords" ]] && continue
-
-        tx=$(echo "$coords" | awk '{print $1}')
-        ty=$(echo "$coords" | awk '{print $2}')
-
         # Проверка: цель в секторе РЛС
         if is_in_sector "$RLS_X" "$RLS_Y" "$RLS_RANGE" "$RLS_ANGLE" "$RLS_SECTOR" "$tx" "$ty"; then
             current_targets[$target_id]="$tx $ty"
+            current_target_mtimes[$target_id]="$target_mtime"
         fi
-    done
+    done < <(scan_targets)
 
     for target_id in "${!current_targets[@]}"; do
         tx=$(echo "${current_targets[$target_id]}" | awk '{print $1}')
         ty=$(echo "${current_targets[$target_id]}" | awk '{print $2}')
 
-        if [[ -z "${first_detection[$target_id]}" ]]; then
-            # Первая засечка
-            first_detection[$target_id]="$tx $ty"
-        elif [[ -z "${reported_targets[$target_id]}" ]]; then
-            # Вторая засечка - определяем тип и докладываем
-            prev_x=$(echo "${first_detection[$target_id]}" | awk '{print $1}')
-            prev_y=$(echo "${first_detection[$target_id]}" | awk '{print $2}')
+        if [[ -z "${reported_targets[$target_id]}" ]]; then
+            track=$(get_latest_two_visible_marks "sector" "$target_id" "$RLS_X" "$RLS_Y" "$RLS_RANGE" "$RLS_ANGLE" "$RLS_SECTOR") || continue
+            read -r prev_x prev_y prev_mtime latest_x latest_y latest_mtime <<< "$track"
+            (( latest_mtime <= prev_mtime )) && continue
 
-            speed=$(calc_speed "$prev_x" "$prev_y" "$tx" "$ty")
+            speed=$(calc_speed "$prev_x" "$prev_y" "$latest_x" "$latest_y")
             target_type=$(get_target_type "$speed")
+            tx=$latest_x
+            ty=$latest_y
 
             timestamp=$(date +"%H:%M:%S:%3N")
 
@@ -103,9 +93,6 @@ while true; do
             send_to_kp "$RLS_NAME" "DETECT $target_id $tx $ty $target_type $speed"
             echo "[$RLS_NAME] $report_msg"
 
-            # Запись в БД
-            db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_x, target_y, target_type, message) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$RLS_NAME', 'DETECT', '$target_id', $tx, $ty, '$target_type', '$report_msg');"
-
             # Проверка: если БР движется в сторону СПРО
             if [[ "$target_type" == "BB_BR" ]]; then
                 if is_moving_toward_spro "$prev_x" "$prev_y" "$tx" "$ty"; then
@@ -114,7 +101,6 @@ while true; do
                         log_message "$LOGFILE" "$RLS_NAME" "$spro_msg"
                         send_to_kp "$RLS_NAME" "SPRO_ALERT $target_id $tx $ty $speed"
                         echo "[$RLS_NAME] $spro_msg"
-                        db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_x, target_y, target_type, message) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$RLS_NAME', 'SPRO_ALERT', '$target_id', $tx, $ty, 'BB_BR', '$spro_msg');"
                         reported_spro[$target_id]=1
                     fi
                 fi
@@ -126,9 +112,8 @@ while true; do
     done
 
     # Очистка данных о целях, которые больше не видны
-    for target_id in "${!first_detection[@]}"; do
+    for target_id in "${!reported_targets[@]}"; do
         if [[ -z "${current_targets[$target_id]}" ]]; then
-            unset "first_detection[$target_id]"
             unset "reported_targets[$target_id]"
             unset "reported_spro[$target_id]"
         fi

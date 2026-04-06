@@ -2,21 +2,28 @@
 # Version 3.1
 (( BASH_VERSINFO[0] < 4 )) && exit 1
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+check_environment
+check_single_instance "GenTargets"
+trap "cleanup 'GenTargets'; exit 0" SIGTERM SIGINT EXIT
+
 declare -A TId
-MaxKolTargets=50      # Максимальное количество целей
+MaxKolTargets="${MAX_KOL_TARGETS:-50}"      # Максимальное количество целей
 Probability=70        # Вероятность поражения %
 
 RangeX=13000000       # Метры
 RangeY=9000000        # Метры
 XYminusInt=10
 
-types="bsr"           # типы целей
+types="${TARGET_TYPES:-bsr}"           # типы целей
 declare -A SpeedMinArray=( ["b"]=8000 ["s"]=50 ["r"]=250 )   # Скорость М/с min, 
 declare -A SpeedPlusArray=( ["b"]=2000 ["s"]=199 ["r"]=750 ) # разница между максимумом и минимумом
 declare -A TtlMaxArray=( ["b"]=300 ["s"]=200 ["r"]=200 )     # Максимальное время жизни
 declare -A TipTargetArray=( ["b"]="Бал.блок" ["s"]="Самолет" ["r"]="К.ракета" )
 
-Sleeptime=1           # Задержка 1с
+Sleeptime="${GEN_SLEEPTIME:-1}"           # Задержка между циклами генератора
 d=0                   # Отладка
 declare -A tsign_map=( ["b"]="\033[0;31m\033[7m^\033[0m\033[0m" ["s"]="\033[0;34m\033[7m>\033[0m\033[0m"  ["r"]="\033[0;32m\033[7m-\033[0m\033[0m" )
 for ((i = 0; i < 5895; i++)); do  maps[$i]=" "; done

@@ -12,7 +12,8 @@ check_environment() {
     fi
     # Проверка: Linux
     if [[ "$(uname -s)" != "Linux" ]]; then
-        echo "ПРЕДУПРЕЖДЕНИЕ: Система предназначена для Linux. Текущая ОС: $(uname -s)" >&2
+        echo "ОШИБКА: Запуск разрешен только в Linux. Текущая ОС: $(uname -s)" >&2
+        exit 1
     fi
     # Проверка: bash
     if [[ -z "$BASH_VERSION" ]]; then
@@ -28,6 +29,7 @@ check_environment() {
 # --- Проверка дублирования процесса ---
 check_single_instance() {
     local name="$1"
+    mkdir -p "$PID_DIR"
     local pidfile="$PID_DIR/${name}.pid"
     if [[ -f "$pidfile" ]]; then
         local old_pid
@@ -79,14 +81,27 @@ calc_speed() {
     calc_distance "$x1" "$y1" "$x2" "$y2"
 }
 
+# --- Вычисление скорости цели в м/с с учетом интервала между засечками ---
+calc_speed_mps() {
+    local x1=$1 y1=$2 x2=$3 y2=$4 dt_millis=$5
+    local distance
+    distance=$(calc_distance "$x1" "$y1" "$x2" "$y2")
+
+    if [[ -z "$dt_millis" ]] || (( dt_millis <= 0 )); then
+        dt_millis=1000
+    fi
+
+    echo $(((distance * 1000) / dt_millis))
+}
+
 # --- Определение типа цели по скорости ---
 get_target_type() {
     local speed=$1
-    if (( speed >= SPEED_BB_MIN && speed <= SPEED_BB_MAX )); then
+    if (( speed >= SPEED_BB_MIN )); then
         echo "BB_BR"  # Боевой блок баллистической ракеты
-    elif (( speed >= SPEED_KR_MIN && speed <= SPEED_KR_MAX )); then
+    elif (( speed >= SPEED_KR_MIN )); then
         echo "KR"     # Крылатая ракета
-    elif (( speed >= SPEED_SAM_MIN && speed <= SPEED_SAM_MAX )); then
+    elif (( speed >= SPEED_SAM_MIN )); then
         echo "SAM"    # Самолет
     else
         echo "UNKNOWN"
@@ -287,12 +302,84 @@ get_latest_target_file() {
     echo "$latest"
 }
 
+# --- Получение mtime последней отметки цели в целом ---
+get_latest_target_mtime() {
+    local target_id="$1"
+    local latest_file
+    latest_file=$(get_latest_target_file "$target_id")
+    [[ -z "$latest_file" ]] && return 1
+    get_file_mtime "$latest_file"
+}
+
+# --- Получение mtime последней СВЕЖЕЙ отметки цели ---
+# Если в каталоге остались только старые файлы уже пропавшей/уничтоженной цели,
+# считаем, что актуальной отметки больше нет.
+get_latest_fresh_target_mtime() {
+    local target_id="$1"
+    local latest_mtime current_time
+
+    latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null) || return 1
+    current_time=$(date +%s%3N 2>/dev/null || echo $(( $(date +%s) * 1000 )))
+
+    (( current_time - latest_mtime > TARGET_STALE_SECONDS * 1000 )) && return 1
+    echo "$latest_mtime"
+}
+
+# --- Асинхронная проверка результата выстрела ---
+# Результат пишется в temp/shot_results, чтобы основной цикл системы только
+# снимал блокировку по цели и не зависел от длинного ожидания.
+track_shot_result_async() {
+    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" observed_mtime="$5"
+    local result_dir="$TEMP_DIR/shot_results"
+    mkdir -p "$result_dir"
+
+    (
+        sleep "$SHOT_RESULT_DELAY"
+
+        local first_post_shot_mtime second_post_shot_mtime miss_msg destroy_msg
+        first_post_shot_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
+
+        if (( first_post_shot_mtime > observed_mtime )); then
+            sleep "$SHOT_RESULT_CONFIRM_DELAY"
+            second_post_shot_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
+        else
+            second_post_shot_mtime=$first_post_shot_mtime
+        fi
+
+        if (( second_post_shot_mtime > first_post_shot_mtime )); then
+            miss_msg="ПРОМАХ по цели id:$target_id"
+            log_message "$logfile" "$system_name" "$miss_msg"
+            send_to_kp "$system_name" "MISS $target_id $shot_type"
+            echo "[$system_name] $miss_msg"
+            printf "MISS\n" > "$result_dir/${system_name}_${target_id}"
+        else
+            destroy_msg="Цель id:$target_id УНИЧТОЖЕНА"
+            log_message "$logfile" "$system_name" "$destroy_msg"
+            send_to_kp "$system_name" "DESTROYED $target_id $shot_type"
+            echo "[$system_name] $destroy_msg"
+            printf "DESTROYED\n" > "$result_dir/${system_name}_${target_id}"
+        fi
+    ) &
+}
+
+get_file_mtime() {
+    local filepath="$1"
+    local mtime_ms
+    mtime_ms=$(find "$filepath" -maxdepth 0 -printf '%T@\n' 2>/dev/null | awk '{printf "%.0f\n", $1 * 1000}')
+    if [[ -n "$mtime_ms" ]]; then
+        echo "$mtime_ms"
+    else
+        echo $(( ($(stat -f %m "$filepath" 2>/dev/null || echo 0)) * 1000 ))
+    fi
+}
+
 # --- Получение всех текущих целей ---
-# Возвращает: ID X Y (по одной цели на строку)
+# Возвращает: ID X Y MTIME (по одной цели на строку)
 scan_targets() {
-    declare -A seen_ids
     declare -A latest_files
     declare -A latest_times
+    local current_time
+    current_time=$(date +%s%3N 2>/dev/null || echo $(( $(date +%s) * 1000 )))
 
     local f decoded_id ftime
 
@@ -301,7 +388,7 @@ scan_targets() {
         decoded_id=$(decode_target_id "$f")
         [[ -z "$decoded_id" ]] && continue
 
-        ftime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+        ftime=$(get_file_mtime "$f")
         if [[ -z "${latest_times[$decoded_id]}" ]] || (( ftime > ${latest_times[$decoded_id]} )); then
             latest_times[$decoded_id]=$ftime
             latest_files[$decoded_id]="$f"
@@ -309,12 +396,64 @@ scan_targets() {
     done
 
     for decoded_id in "${!latest_files[@]}"; do
+        (( current_time - ${latest_times[$decoded_id]} > TARGET_STALE_SECONDS * 1000 )) && continue
+
         local coords
         coords=$(read_target_coords "${latest_files[$decoded_id]}")
         if [[ -n "$coords" ]]; then
-            echo "$decoded_id $coords"
+            echo "$decoded_id $coords ${latest_times[$decoded_id]}"
         fi
     done
+}
+
+# --- Получение двух последних отметок конкретной цели ---
+# Текущая (самая новая) отметка должна быть в зоне/секторе системы,
+# предыдущая может быть вне зоны: это соответствует требованию
+# "уничтожение/определение типа на 2-й засечке", а не "две засечки внутри зоны".
+# Возвращает: prev_x prev_y prev_mtime curr_x curr_y curr_mtime
+get_latest_two_visible_marks() {
+    local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
+    local latest_file="" latest_time=0 prev_file="" prev_time=0
+    local f decoded_id ftime coords tx ty
+
+    for f in "$TARGETS_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        decoded_id=$(decode_target_id "$f")
+        [[ "$decoded_id" != "$target_id" ]] && continue
+
+        coords=$(read_target_coords "$f")
+        [[ -z "$coords" ]] && continue
+        read -r tx ty <<< "$coords"
+
+        ftime=$(get_file_mtime "$f")
+
+        if (( ftime > latest_time )); then
+            prev_time=$latest_time
+            prev_file="$latest_file"
+            latest_time=$ftime
+            latest_file="$f"
+        elif (( ftime > prev_time )); then
+            prev_time=$ftime
+            prev_file="$f"
+        fi
+    done
+
+    [[ -z "$prev_file" || -z "$latest_file" ]] && return 1
+
+    local prev_coords latest_coords
+    prev_coords=$(read_target_coords "$prev_file")
+    latest_coords=$(read_target_coords "$latest_file")
+    [[ -z "$prev_coords" || -z "$latest_coords" ]] && return 1
+
+    # Подтверждаем, что вторая засечка (текущая отметка) уже находится в зоне системы.
+    read -r tx ty <<< "$latest_coords"
+    if [[ "$mode" == "sector" ]]; then
+        is_in_sector "$cx" "$cy" "$range" "$angle" "$sector" "$tx" "$ty" || return 1
+    else
+        is_in_range "$cx" "$cy" "$range" "$tx" "$ty" || return 1
+    fi
+
+    echo "$prev_coords $prev_time $latest_coords $latest_time"
 }
 
 # --- Вставка записи в БД ---

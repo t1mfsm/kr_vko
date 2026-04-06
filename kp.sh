@@ -25,12 +25,14 @@ ALL_SYSTEMS=("$RLS1_NAME" "$RLS2_NAME" "$RLS3_NAME" "$ZRDN1_NAME" "$ZRDN2_NAME" 
 
 declare -A system_status        # имя -> ONLINE/OFFLINE
 declare -A last_heartbeat       # имя -> timestamp
+declare -A missed_heartbeats    # имя -> количество подряд пропусков heartbeat
 declare -A reported_status      # имя_статус -> 1 (для недопущения дублирования)
 
 # Инициализация статусов
 for sys in "${ALL_SYSTEMS[@]}"; do
     system_status[$sys]="UNKNOWN"
     last_heartbeat[$sys]=0
+    missed_heartbeats[$sys]=0
 done
 
 last_heartbeat_check=0
@@ -129,6 +131,7 @@ while true; do
                 target_id=$(echo "$decoded" | awk '{print $2}')
                 target_type=$(echo "$decoded" | awk '{print $3}')
                 ammo_info=$(echo "$decoded" | grep -o 'AMMO:[0-9]*' || true)
+                ammo_left=$(echo "$ammo_info" | grep -o '[0-9]*' || true)
 
                 for sys in "${ALL_SYSTEMS[@]}"; do
                     if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
@@ -143,6 +146,9 @@ while true; do
                 echo "[КП от $sender] $log_msg"
 
                 db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_type, message) VALUES ('$timestamp', '$sender', 'SHOT', '$target_id', '$target_type', '$log_msg');"
+                if [[ -n "$ammo_left" ]]; then
+                    db_insert "INSERT INTO system_status (timestamp, system_name, status, ammo_left) VALUES ('$timestamp', '$sender', 'ONLINE', $ammo_left);"
+                fi
                 ;;
 
             DESTROYED)
@@ -161,6 +167,7 @@ while true; do
                 log_message "$SYSTEM_LOG" "$sender" "$log_msg"
                 echo "[КП от $sender] >>> $log_msg <<<"
 
+                db_insert "INSERT INTO shots (timestamp, system_name, target_id, target_type, result) VALUES ('$timestamp', '$sender', '$target_id', '$target_type', 'DESTROYED');"
                 db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_type, message) VALUES ('$timestamp', '$sender', 'DESTROYED', '$target_id', '$target_type', '$log_msg');"
                 ;;
 
@@ -180,6 +187,7 @@ while true; do
                 log_message "$SYSTEM_LOG" "$sender" "$log_msg"
                 echo "[КП от $sender] $log_msg"
 
+                db_insert "INSERT INTO shots (timestamp, system_name, target_id, target_type, result) VALUES ('$timestamp', '$sender', '$target_id', '$target_type', 'MISS');"
                 db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_type, message) VALUES ('$timestamp', '$sender', 'MISS', '$target_id', '$target_type', '$log_msg');"
                 ;;
 
@@ -205,6 +213,7 @@ while true; do
                 echo "[КП] $log_msg"
 
                 db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys_name', 'REFILL', '$log_msg');"
+                db_insert "INSERT INTO system_status (timestamp, system_name, status, ammo_left) VALUES ('$timestamp', '$sys_name', 'ONLINE', $(echo "$ammo_info" | grep -o '[0-9]*' || echo 'NULL'));"
                 ;;
 
             NSD)
@@ -237,8 +246,8 @@ while true; do
             touch "$MSG_DIR/heartbeat/${sys}_request"
         done
 
-        # Подождать ответы (1 секунду)
-        sleep 1
+        # Подождать ответы
+        sleep "$HEARTBEAT_RESPONSE_TIMEOUT"
 
         timestamp=$(date +"%d.%m %H:%M:%S:%3N")
         for sys in "${ALL_SYSTEMS[@]}"; do
@@ -256,10 +265,12 @@ while true; do
 
                 rm -f "$response_file"
                 last_heartbeat[$sys]=$current_time
+                missed_heartbeats[$sys]=0
 
                 if [[ "${system_status[$sys]}" != "ONLINE" ]]; then
+                    previous_status="${system_status[$sys]}"
                     system_status[$sys]="ONLINE"
-                    if [[ "${reported_status[$status_key]}" != "ONLINE" ]]; then
+                    if [[ "$previous_status" == "OFFLINE" && "${reported_status[$status_key]}" != "ONLINE" ]]; then
                         log_msg="$sys работоспособность восстановлена"
                         log_message "$SYSTEM_LOG" "$sys" "работоспособность восстановлена"
                         log_message "$LOGFILE" "KP_VKO" "$log_msg"
@@ -267,10 +278,17 @@ while true; do
                         db_insert "INSERT INTO journal (timestamp, system_name, event_type, message) VALUES ('$timestamp', '$sys', 'HEARTBEAT', '$log_msg');"
                         db_insert "INSERT INTO system_status (timestamp, system_name, status) VALUES ('$timestamp', '$sys', 'ONLINE');"
                         reported_status[$status_key]="ONLINE"
+                    elif [[ "$previous_status" == "UNKNOWN" ]]; then
+                        reported_status[$status_key]="ONLINE"
                     fi
                 fi
             else
                 # Нет ответа
+                (( missed_heartbeats[$sys]++ ))
+                if (( missed_heartbeats[$sys] < HEARTBEAT_MISSES_BEFORE_OFFLINE )); then
+                    continue
+                fi
+
                 if [[ "${system_status[$sys]}" != "OFFLINE" ]]; then
                     system_status[$sys]="OFFLINE"
                     if [[ "${reported_status[$status_key]}" != "OFFLINE" ]]; then

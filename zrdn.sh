@@ -36,9 +36,8 @@ log_message "$LOGFILE" "$ZRDN_NAME" "Запуск ЗРДН. Координаты
 send_to_kp "$ZRDN_NAME" "STATUS $ZRDN_NAME ONLINE AMMO:$AMMO"
 
 # Ассоциативные массивы
-declare -A first_detection    # ID -> "X Y"
 declare -A reported_targets   # ID -> 1
-declare -A shot_targets       # ID -> 1
+declare -A shot_targets       # ID -> "shot_time:last_seen_mtime:target_type"
 
 while true; do
     # Heartbeat
@@ -55,7 +54,6 @@ while true; do
         if [[ "$decoded" == "ERROR_HMAC" ]]; then
             log_message "$LOGFILE" "$ZRDN_NAME" "ПОПЫТКА НСД! Поддельное сообщение"
             send_to_kp "$ZRDN_NAME" "NSD $ZRDN_NAME Обнаружена попытка подмены сообщения"
-            db_insert "INSERT INTO nsd_log (timestamp, system_name, details) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$ZRDN_NAME', 'Поддельное сообщение от КП');"
         elif [[ "$decoded" == REFILL* ]]; then
             AMMO=$ZRDN_MAX_AMMO
             log_message "$LOGFILE" "$ZRDN_NAME" "Боекомплект пополнен: $AMMO ракет"
@@ -79,38 +77,30 @@ while true; do
 
     # Сканирование целей
     declare -A current_targets
+    declare -A current_target_mtimes
 
-    for f in "$TARGETS_DIR"/*; do
-        [[ -f "$f" ]] || continue
-        target_id=$(decode_target_id "$f")
+    while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
-
-        coords=$(read_target_coords "$f")
-        [[ -z "$coords" ]] && continue
-
-        tx=$(echo "$coords" | awk '{print $1}')
-        ty=$(echo "$coords" | awk '{print $2}')
-
         # Проверка: цель в зоне ЗРДН (360 градусов)
         if is_in_range "$ZRDN_X" "$ZRDN_Y" "$ZRDN_RANGE" "$tx" "$ty"; then
             current_targets[$target_id]="$tx $ty"
+            current_target_mtimes[$target_id]="$target_mtime"
         fi
-    done
+    done < <(scan_targets)
 
     for target_id in "${!current_targets[@]}"; do
         tx=$(echo "${current_targets[$target_id]}" | awk '{print $1}')
         ty=$(echo "${current_targets[$target_id]}" | awk '{print $2}')
 
-        if [[ -z "${first_detection[$target_id]}" ]]; then
-            # Первая засечка
-            first_detection[$target_id]="$tx $ty"
-        elif [[ -z "${reported_targets[$target_id]}" ]]; then
-            # Вторая засечка
-            prev_x=$(echo "${first_detection[$target_id]}" | awk '{print $1}')
-            prev_y=$(echo "${first_detection[$target_id]}" | awk '{print $2}')
+        if [[ -z "${reported_targets[$target_id]}" ]]; then
+            track=$(get_latest_two_visible_marks "circle" "$target_id" "$ZRDN_X" "$ZRDN_Y" "$ZRDN_RANGE") || continue
+            read -r prev_x prev_y prev_mtime latest_x latest_y latest_mtime <<< "$track"
+            (( latest_mtime <= prev_mtime )) && continue
 
-            speed=$(calc_speed "$prev_x" "$prev_y" "$tx" "$ty")
+            speed=$(calc_speed "$prev_x" "$prev_y" "$latest_x" "$latest_y")
             target_type=$(get_target_type "$speed")
+            tx=$latest_x
+            ty=$latest_y
 
             timestamp=$(date +"%H:%M:%S:%3N")
 
@@ -119,8 +109,6 @@ while true; do
             log_message "$LOGFILE" "$ZRDN_NAME" "$report_msg"
             send_to_kp "$ZRDN_NAME" "DETECT $target_id $tx $ty $target_type $speed"
             echo "[$ZRDN_NAME] $report_msg"
-
-            db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_x, target_y, target_type, message) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$ZRDN_NAME', 'DETECT', '$target_id', $tx, $ty, '$target_type', 'Обнаружена цель');"
 
             reported_targets[$target_id]=1
 
@@ -131,13 +119,12 @@ while true; do
                     echo "$ZRDN_NAME" > "$DESTROY_DIR/$target_id"
                     ((AMMO--))
                     shot_targets[$target_id]=1
+                    track_shot_result_async "$ZRDN_NAME" "$LOGFILE" "$target_id" "$target_type" "$latest_mtime"
 
                     shot_msg="Стрельба по цели id:$target_id тип:$target_type. Осталось ракет: $AMMO"
                     log_message "$LOGFILE" "$ZRDN_NAME" "$shot_msg"
                     send_to_kp "$ZRDN_NAME" "SHOT $target_id $target_type AMMO:$AMMO"
                     echo "[$ZRDN_NAME] $shot_msg"
-
-                    db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, target_x, target_y, target_type, message) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$ZRDN_NAME', 'SHOT', '$target_id', $tx, $ty, '$target_type', '$shot_msg');"
 
                     if (( AMMO <= 0 )); then
                         AMMO_EMPTY_TIME=$(date +%s)
@@ -151,43 +138,18 @@ while true; do
         fi
     done
 
-    # Проверка результатов стрельбы
-    for target_id in "${!shot_targets[@]}"; do
-        if [[ -z "${current_targets[$target_id]}" ]]; then
-            # Цель поражена
-            destroy_msg="Цель id:$target_id УНИЧТОЖЕНА"
-            log_message "$LOGFILE" "$ZRDN_NAME" "$destroy_msg"
-            send_to_kp "$ZRDN_NAME" "DESTROYED $target_id"
-            echo "[$ZRDN_NAME] $destroy_msg"
-
-            db_insert "INSERT INTO shots (timestamp, system_name, target_id, target_type, result) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$ZRDN_NAME', '$target_id', '', 'DESTROYED');"
-            db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, message) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$ZRDN_NAME', 'DESTROYED', '$target_id', '$destroy_msg');"
-
-            unset "shot_targets[$target_id]"
-            unset "first_detection[$target_id]"
-            unset "reported_targets[$target_id]"
-        else
-            # Проверка промаха
-            if [[ -n "${reported_targets[$target_id]}" ]] && [[ -n "${shot_targets[$target_id]}" ]]; then
-                if [[ ! -f "$DESTROY_DIR/$target_id" ]]; then
-                    miss_msg="ПРОМАХ по цели id:$target_id"
-                    log_message "$LOGFILE" "$ZRDN_NAME" "$miss_msg"
-                    send_to_kp "$ZRDN_NAME" "MISS $target_id"
-                    echo "[$ZRDN_NAME] $miss_msg"
-
-                    db_insert "INSERT INTO shots (timestamp, system_name, target_id, target_type, result) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$ZRDN_NAME', '$target_id', '', 'MISS');"
-                    db_insert "INSERT INTO journal (timestamp, system_name, event_type, target_id, message) VALUES ('$(date +"%d.%m %H:%M:%S:%3N")', '$ZRDN_NAME', 'MISS', '$target_id', '$miss_msg');"
-
-                    unset "shot_targets[$target_id]"
-                fi
-            fi
-        fi
+    # Снятие блокировки по целям, для которых фоновый трекер уже определил результат
+    for result_file in "$TEMP_DIR/shot_results/${ZRDN_NAME}_"*; do
+        [[ -f "$result_file" ]] || continue
+        target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
+        unset "shot_targets[$target_id]"
+        unset "reported_targets[$target_id]"
+        rm -f "$result_file"
     done
 
     # Очистка пропавших целей
-    for target_id in "${!first_detection[@]}"; do
+    for target_id in "${!reported_targets[@]}"; do
         if [[ -z "${current_targets[$target_id]}" ]] && [[ -z "${shot_targets[$target_id]}" ]]; then
-            unset "first_detection[$target_id]"
             unset "reported_targets[$target_id]"
         fi
     done

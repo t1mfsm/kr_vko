@@ -6,6 +6,16 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
+if [[ -z "$BASH_VERSION" ]]; then
+    echo "ОШИБКА: Требуется интерпретатор Bash!" >&2
+    exit 1
+fi
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "ОШИБКА: Скрипт остановки разрешен только в Linux. Текущая ОС: $(uname -s)" >&2
+    exit 1
+fi
+
 stop_component() {
     local name="$1"
     local pidfile="$PID_DIR/${name}.pid"
