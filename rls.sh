@@ -12,7 +12,6 @@ if [[ "$RLS_NUM" != "1" && "$RLS_NUM" != "2" && "$RLS_NUM" != "3" ]]; then
     exit 1
 fi
 
-# Загрузка параметров нужной РЛС
 eval "RLS_NAME=\$RLS${RLS_NUM}_NAME"
 eval "RLS_TYPE=\$RLS${RLS_NUM}_TYPE"
 eval "RLS_X=\$RLS${RLS_NUM}_X"
@@ -33,18 +32,15 @@ echo "[$RLS_NAME] Дальность: $RLS_RANGE м, Сектор: $RLS_SECTOR �
 log_message "$LOGFILE" "$RLS_NAME" "Запуск РЛС типа $RLS_TYPE. Координаты: X=$RLS_X Y=$RLS_Y"
 send_to_kp "$RLS_NAME" "STATUS $RLS_NAME ONLINE"
 
-# Ассоциативные массивы для отслеживания целей
-declare -A reported_targets   # ID -> 1 (уже доложенные цели)
-declare -A reported_spro      # ID -> 1 (уже доложенные о движении к СПРО)
+declare -A reported_targets
+declare -A reported_spro
 
 while true; do
-    # Проверка heartbeat запроса от КП
     if [[ -f "$MSG_DIR/heartbeat/${RLS_NAME}_request" ]]; then
         rm -f "$MSG_DIR/heartbeat/${RLS_NAME}_request"
         send_heartbeat_response "$RLS_NAME"
     fi
 
-    # Проверка сообщений от КП
     for msg_file in "$MSG_DIR/from_kp/${RLS_NAME}_"*; do
         [[ -f "$msg_file" ]] || continue
         encrypted=$(cat "$msg_file" 2>/dev/null)
@@ -56,13 +52,11 @@ while true; do
         rm -f "$msg_file"
     done
 
-    # Сканирование целей
     declare -A current_targets
     declare -A current_target_mtimes
 
     while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
-        # Проверка: цель в секторе РЛС
         if is_in_sector "$RLS_X" "$RLS_Y" "$RLS_RANGE" "$RLS_ANGLE" "$RLS_SECTOR" "$tx" "$ty"; then
             current_targets[$target_id]="$tx $ty"
             current_target_mtimes[$target_id]="$target_mtime"
@@ -85,13 +79,11 @@ while true; do
 
             timestamp=$(date +"%H:%M:%S:%3N")
 
-            # Доклад об обнаружении
             report_msg="В $timestamp Обнаружена цель id:$target_id с координатами $tx $ty тип:$target_type скорость:$speed"
             log_message "$LOGFILE" "$RLS_NAME" "$report_msg"
             send_to_kp "$RLS_NAME" "DETECT $target_id $tx $ty $target_type $speed"
             echo "[$RLS_NAME] $report_msg"
 
-            # Проверка: если БР движется в сторону СПРО
             if [[ "$target_type" == "BB_BR" ]]; then
                 if is_moving_toward_spro "$prev_x" "$prev_y" "$tx" "$ty"; then
                     if [[ -z "${reported_spro[$target_id]}" ]]; then
@@ -105,11 +97,9 @@ while true; do
             fi
 
             reported_targets[$target_id]=1
-            # Цель не сопровождается после выдачи информации на КП
         fi
     done
 
-    # Очистка данных о целях, которые больше не видны
     for target_id in "${!reported_targets[@]}"; do
         if [[ -z "${current_targets[$target_id]}" ]]; then
             unset "reported_targets[$target_id]"

@@ -32,18 +32,15 @@ echo "[$ZRDN_NAME] Боезапас: $AMMO ракет"
 log_message "$LOGFILE" "$ZRDN_NAME" "Запуск ЗРДН. Координаты: X=$ZRDN_X Y=$ZRDN_Y, Радиус: $ZRDN_RANGE"
 send_to_kp "$ZRDN_NAME" "STATUS $ZRDN_NAME ONLINE AMMO:$AMMO"
 
-# Ассоциативные массивы
-declare -A reported_targets   # ID -> 1
-declare -A shot_targets       # ID -> "shot_time:last_seen_mtime:target_type"
+declare -A reported_targets
+declare -A shot_targets
 
 while true; do
-    # Heartbeat
     if [[ -f "$MSG_DIR/heartbeat/${ZRDN_NAME}_request" ]]; then
         rm -f "$MSG_DIR/heartbeat/${ZRDN_NAME}_request"
         send_heartbeat_response "$ZRDN_NAME"
     fi
 
-    # Сообщения от КП
     for msg_file in "$MSG_DIR/from_kp/${ZRDN_NAME}_"*; do
         [[ -f "$msg_file" ]] || continue
         encrypted=$(cat "$msg_file" 2>/dev/null)
@@ -60,7 +57,6 @@ while true; do
         rm -f "$msg_file"
     done
 
-    # Автопополнение
     if (( AMMO <= 0 && AMMO_EMPTY_TIME > 0 )); then
         local_now=$(date +%s)
         if (( local_now - AMMO_EMPTY_TIME >= AMMO_REFILL_TIME )); then
@@ -72,13 +68,11 @@ while true; do
         fi
     fi
 
-    # Сканирование целей
     declare -A current_targets
     declare -A current_target_mtimes
 
     while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
-        # Проверка: цель в зоне ЗРДН (360 градусов)
         if is_in_range "$ZRDN_X" "$ZRDN_Y" "$ZRDN_RANGE" "$tx" "$ty"; then
             current_targets[$target_id]="$tx $ty"
             current_target_mtimes[$target_id]="$target_mtime"
@@ -101,7 +95,6 @@ while true; do
 
             timestamp=$(date +"%H:%M:%S:%3N")
 
-            # Доклад об обнаружении
             report_msg="В $timestamp Обнаружена цель id:$target_id координаты $tx $ty тип:$target_type скорость:$speed"
             log_message "$LOGFILE" "$ZRDN_NAME" "$report_msg"
             send_to_kp "$ZRDN_NAME" "DETECT $target_id $tx $ty $target_type $speed"
@@ -109,10 +102,8 @@ while true; do
 
             reported_targets[$target_id]=1
 
-            # ЗРДН уничтожает только самолеты и крылатые ракеты
             if [[ "$target_type" == "SAM" || "$target_type" == "KR" ]]; then
                 if (( AMMO > 0 )); then
-                    # Попытка уничтожения
                     echo "$ZRDN_NAME" > "$DESTROY_DIR/$target_id"
                     ((AMMO--))
                     shot_targets[$target_id]=1
@@ -135,7 +126,6 @@ while true; do
         fi
     done
 
-    # Снятие блокировки по целям, для которых фоновый трекер уже определил результат
     for result_file in "$TEMP_DIR/shot_results/${ZRDN_NAME}_"*; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
@@ -144,7 +134,6 @@ while true; do
         rm -f "$result_file"
     done
 
-    # Очистка пропавших целей
     for target_id in "${!reported_targets[@]}"; do
         if [[ -z "${current_targets[$target_id]}" ]] && [[ -z "${shot_targets[$target_id]}" ]]; then
             unset "reported_targets[$target_id]"

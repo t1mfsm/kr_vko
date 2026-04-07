@@ -18,18 +18,15 @@ echo "[$SPRO_NAME] Боезапас: $AMMO противоракет"
 log_message "$LOGFILE" "$SPRO_NAME" "Запуск СПРО. Координаты: X=$SPRO_X Y=$SPRO_Y, Радиус: $SPRO_RANGE"
 send_to_kp "$SPRO_NAME" "STATUS $SPRO_NAME ONLINE AMMO:$AMMO"
 
-# Ассоциативные массивы
-declare -A reported_targets   # ID -> 1
-declare -A shot_targets       # ID -> "shot_time:last_seen_mtime:target_type"
+declare -A reported_targets
+declare -A shot_targets
 
 while true; do
-    # Heartbeat
     if [[ -f "$MSG_DIR/heartbeat/${SPRO_NAME}_request" ]]; then
         rm -f "$MSG_DIR/heartbeat/${SPRO_NAME}_request"
         send_heartbeat_response "$SPRO_NAME"
     fi
 
-    # Сообщения от КП
     for msg_file in "$MSG_DIR/from_kp/${SPRO_NAME}_"*; do
         [[ -f "$msg_file" ]] || continue
         encrypted=$(cat "$msg_file" 2>/dev/null)
@@ -46,7 +43,6 @@ while true; do
         rm -f "$msg_file"
     done
 
-    # Автопополнение боекомплекта
     if (( AMMO <= 0 && AMMO_EMPTY_TIME > 0 )); then
         local_now=$(date +%s)
         if (( local_now - AMMO_EMPTY_TIME >= AMMO_REFILL_TIME )); then
@@ -58,13 +54,11 @@ while true; do
         fi
     fi
 
-    # Сканирование целей
     declare -A current_targets
     declare -A current_target_mtimes
 
     while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
-        # Проверка: цель в зоне СПРО (360 градусов)
         if is_in_range "$SPRO_X" "$SPRO_Y" "$SPRO_RANGE" "$tx" "$ty"; then
             current_targets[$target_id]="$tx $ty"
             current_target_mtimes[$target_id]="$target_mtime"
@@ -87,7 +81,6 @@ while true; do
 
             timestamp=$(date +"%H:%M:%S:%3N")
 
-            # Доклад об обнаружении
             report_msg="В $timestamp Обнаружена цель id:$target_id координаты $tx $ty тип:$target_type скорость:$speed"
             log_message "$LOGFILE" "$SPRO_NAME" "$report_msg"
             send_to_kp "$SPRO_NAME" "DETECT $target_id $tx $ty $target_type $speed"
@@ -95,10 +88,8 @@ while true; do
 
             reported_targets[$target_id]=1
 
-            # СПРО уничтожает только ББ БР
             if [[ "$target_type" == "BB_BR" ]]; then
                 if (( AMMO > 0 )); then
-                    # Попытка уничтожения
                     echo "$SPRO_NAME" > "$DESTROY_DIR/$target_id"
                     ((AMMO--))
                     shot_targets[$target_id]=1
@@ -121,7 +112,6 @@ while true; do
         fi
     done
 
-    # Снятие блокировки по целям, для которых фоновый трекер уже определил результат
     for result_file in "$TEMP_DIR/shot_results/${SPRO_NAME}_"*; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${SPRO_NAME}_}"
@@ -130,7 +120,6 @@ while true; do
         rm -f "$result_file"
     done
 
-    # Очистка данных о пропавших целях
     for target_id in "${!reported_targets[@]}"; do
         if [[ -z "${current_targets[$target_id]}" ]] && [[ -z "${shot_targets[$target_id]}" ]]; then
             unset "reported_targets[$target_id]"

@@ -11,22 +11,19 @@ LOGFILE="$LOG_DIR/KP_VKO.log"
 SYSTEM_LOG="$LOG_DIR/system_journal.log"
 DB_FILE="$DB_DIR/vko.db"
 
-# Инициализация БД
 init_database
 
 echo "[КП ВКО] Запуск командного пункта ВКО"
 log_message "$LOGFILE" "KP_VKO" "Запуск КП ВКО"
 log_message "$SYSTEM_LOG" "KP_VKO" "=== Система ВКО запущена ==="
 
-# Список всех систем для мониторинга
 ALL_SYSTEMS=("$RLS1_NAME" "$RLS2_NAME" "$RLS3_NAME" "$ZRDN1_NAME" "$ZRDN2_NAME" "$ZRDN3_NAME" "$SPRO_NAME")
 
-declare -A system_status        # имя -> ONLINE/OFFLINE
-declare -A last_heartbeat       # имя -> timestamp
-declare -A missed_heartbeats    # имя -> количество подряд пропусков heartbeat
-declare -A reported_status      # имя_статус -> 1 (для недопущения дублирования)
+declare -A system_status
+declare -A last_heartbeat
+declare -A missed_heartbeats
+declare -A reported_status
 
-# Инициализация статусов
 for sys in "${ALL_SYSTEMS[@]}"; do
     system_status[$sys]="UNKNOWN"
     last_heartbeat[$sys]=0
@@ -38,7 +35,6 @@ last_heartbeat_check=0
 while true; do
     current_time=$(date +%s)
 
-    # --- Обработка сообщений от всех систем ---
     for msg_file in "$MSG_DIR/to_kp/"*; do
         [[ -f "$msg_file" ]] || continue
 
@@ -53,14 +49,12 @@ while true; do
             continue
         fi
 
-        # Извлекаем имя системы из имени файла
         sender=$(basename "$msg_file" | cut -d'_' -f1-2)
-        # Для трёхсловных имён (ZRDN1_Orenburg и т.п.)
+
         if [[ "$sender" != *"_"* ]]; then
             sender=$(basename "$msg_file" | cut -d'_' -f1)
         fi
 
-        # Парсинг сообщений
         msg_type=$(echo "$decoded" | awk '{print $1}')
         timestamp=$(date +"%d.%m %H:%M:%S:%3N")
 
@@ -89,7 +83,6 @@ while true; do
                 target_type=$(echo "$decoded" | awk '{print $5}')
                 speed=$(echo "$decoded" | awk '{print $6}')
 
-                # Определяем отправителя по файлу
                 for sys in "${ALL_SYSTEMS[@]}"; do
                     if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
                         sender="$sys"
@@ -235,16 +228,14 @@ while true; do
         rm -f "$msg_file"
     done
 
-    # --- Проверка работоспособности систем (heartbeat) ---
     if (( current_time - last_heartbeat_check >= HEARTBEAT_INTERVAL )); then
         last_heartbeat_check=$current_time
 
         for sys in "${ALL_SYSTEMS[@]}"; do
-            # Отправить запрос heartbeat
+
             touch "$MSG_DIR/heartbeat/${sys}_request"
         done
 
-        # Подождать ответы
         sleep "$HEARTBEAT_RESPONSE_TIMEOUT"
 
         timestamp=$(date +"%d.%m %H:%M:%S:%3N")
@@ -281,7 +272,6 @@ while true; do
                     fi
                 fi
             else
-                # Нет ответа
                 (( missed_heartbeats[$sys]++ ))
                 if (( missed_heartbeats[$sys] < HEARTBEAT_MISSES_BEFORE_OFFLINE )); then
                     continue

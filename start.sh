@@ -3,29 +3,24 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
-# Проверка: не root
 if [[ $EUID -eq 0 ]]; then
     echo "ОШИБКА: Запуск от имени root запрещен!" >&2
     exit 1
 fi
 
-# Проверка bash
 if [[ -z "$BASH_VERSION" ]]; then
     echo "ОШИБКА: Требуется интерпретатор Bash!" >&2
     exit 1
 fi
 
-# Проверка Linux
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "ОШИБКА: Запуск разрешен только в Linux. Текущая ОС: $(uname -s)" >&2
     exit 1
 fi
 
-# Создание директорий
 mkdir -p "$DB_DIR" "$LOG_DIR" "$MSG_DIR/to_kp" "$MSG_DIR/from_kp" "$MSG_DIR/heartbeat" "$TEMP_DIR" "$PID_DIR"
 mkdir -p /tmp/GenTargets/Targets /tmp/GenTargets/Destroy
 
-# Инициализация БД
 source "$SCRIPT_DIR/common.sh"
 init_database
 
@@ -98,14 +93,12 @@ else
     echo "========================================="
     echo ""
 
-    # Чистый запуск всей системы: новая БД и пустые очереди сообщений
     rm -f "$DB_DIR/vko.db"
     rm -f "$MSG_DIR/to_kp/"* 2>/dev/null
     rm -f "$MSG_DIR/from_kp/"* 2>/dev/null
     rm -f "$MSG_DIR/heartbeat/"* 2>/dev/null
     init_database
 
-    # Порядок запуска: генератор -> КП -> РЛС -> СПРО -> ЗРДН
     start_component gen
     sleep 2
 

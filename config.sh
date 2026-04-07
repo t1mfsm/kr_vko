@@ -22,10 +22,6 @@ HEARTBEAT_MISSES_BEFORE_OFFLINE=4
 MAX_LOG_LINES=5000
 AMMO_REFILL_TIME=120
 
-# Coordinates are stored in the same условные метры as the target generator.
-# City positions are aligned to the provided map for this variant.
-
-# --- RLS ---
 RLS1_NAME="RLS1_Daryal_Minsk"
 RLS1_TYPE="Daryal"
 RLS1_X=2500000
@@ -50,7 +46,6 @@ RLS3_RANGE=4000000
 RLS3_ANGLE=225
 RLS3_SECTOR=200
 
-# --- ZRDN ---
 ZRDN1_NAME="ZRDN1_Crimea"
 ZRDN1_X=2700000
 ZRDN1_Y=2550000
@@ -69,14 +64,12 @@ ZRDN3_Y=3400000
 ZRDN3_RANGE=550000
 ZRDN3_AMMO=20
 
-# --- SPRO ---
 SPRO_NAME="SPRO_Novosibirsk"
 SPRO_X=6100000
 SPRO_Y=3300000
 SPRO_RANGE=800000
 SPRO_AMMO=10
 
-# --- Target speeds (m/s) ---
 SPEED_BB_MIN=8000
 SPEED_BB_MAX=10000
 SPEED_KR_MIN=250
