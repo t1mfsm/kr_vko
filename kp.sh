@@ -35,12 +35,10 @@ for sys in "${ALL_SYSTEMS[@]}"; do
     missed_heartbeats[$sys]=0
 done
 
-last_heartbeat_check=0
+process_kp_messages() {
+    local msg_file encrypted decoded sender msg_type timestamp
+    local sys sys_name status ammo_info ammo_left target_id tx ty target_type speed details log_msg
 
-while true; do
-    current_time=$(date +%s)
-
-    # --- Обработка сообщений от всех систем ---
     for msg_file in "$MSG_DIR/to_kp/"*; do
         [[ -f "$msg_file" ]] || continue
 
@@ -55,14 +53,11 @@ while true; do
             continue
         fi
 
-        # Извлекаем имя системы из имени файла
         sender=$(basename "$msg_file" | cut -d'_' -f1-2)
-        # Для трёхсловных имён (ZRDN1_Orenburg и т.п.)
         if [[ "$sender" != *"_"* ]]; then
             sender=$(basename "$msg_file" | cut -d'_' -f1)
         fi
 
-        # Парсинг сообщений
         msg_type=$(echo "$decoded" | awk '{print $1}')
         timestamp=$(date +"%d.%m %H:%M:%S:%3N")
 
@@ -91,7 +86,6 @@ while true; do
                 target_type=$(echo "$decoded" | awk '{print $5}')
                 speed=$(echo "$decoded" | awk '{print $6}')
 
-                # Определяем отправителя по файлу
                 for sys in "${ALL_SYSTEMS[@]}"; do
                     if [[ "$(basename "$msg_file")" == "${sys}_"* ]]; then
                         sender="$sys"
@@ -236,9 +230,18 @@ while true; do
 
         rm -f "$msg_file"
     done
+}
+
+last_heartbeat_check=0
+
+while true; do
+    current_time=$(date +%s)
+
+    process_kp_messages
 
     # --- Проверка работоспособности систем (heartbeat) ---
     if (( current_time - last_heartbeat_check >= HEARTBEAT_INTERVAL )); then
+        heartbeat_deadline=$((current_time + HEARTBEAT_RESPONSE_TIMEOUT))
         last_heartbeat_check=$current_time
 
         for sys in "${ALL_SYSTEMS[@]}"; do
@@ -246,8 +249,10 @@ while true; do
             touch "$MSG_DIR/heartbeat/${sys}_request"
         done
 
-        # Подождать ответы
-        sleep "$HEARTBEAT_RESPONSE_TIMEOUT"
+        while (( $(date +%s) < heartbeat_deadline )); do
+            sleep "$CHECK_INTERVAL"
+            process_kp_messages
+        done
 
         timestamp=$(date +"%d.%m %H:%M:%S:%3N")
         for sys in "${ALL_SYSTEMS[@]}"; do

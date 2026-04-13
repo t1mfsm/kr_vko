@@ -11,6 +11,7 @@ PID_DIR="$BASE_DIR/pids"
 
 TARGETS_DIR="/tmp/GenTargets/Targets"
 DESTROY_DIR="/tmp/GenTargets/Destroy"
+GEN_TARGETS_LOG="/tmp/GenTargets/GenTargets.log"
 
 # Ключ шифрования для HMAC (общий секрет)
 HMAC_KEY="VKO_SECRET_KEY_2024_kr"
@@ -24,9 +25,19 @@ TARGET_STALE_SECONDS=2
 # Задержка перед фиксацией результата выстрела
 SHOT_RESULT_DELAY=2
 
+# Максимально допустимое время между выстрелом и публикацией результата
+SHOT_RESULT_MAX_WAIT=10
+
 # Дополнительное окно подтверждения: помогает отличить реальный промах
-# от гонки, когда после выстрела успевает появиться одна промежуточная отметка.
+# от одиночной промежуточной отметки сразу после выстрела.
 SHOT_RESULT_CONFIRM_DELAY=3
+
+# Шаг опроса при ожидании результата выстрела
+SHOT_RESULT_POLL_INTERVAL=1
+
+# Как долго удерживать цель в сопровождении после промаха или при ожидании
+# отложенного выстрела, даже если отметка временно пропала из current_targets.
+TARGET_RETRY_HOLD_SECONDS=180
 
 # Интервал проверки работоспособности КП (секунды)
 HEARTBEAT_INTERVAL=30

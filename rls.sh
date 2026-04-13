@@ -85,6 +85,8 @@ while true; do
             tx=$latest_x
             ty=$latest_y
 
+            [[ "$target_type" != "BB_BR" ]] && continue
+
             timestamp=$(date +"%H:%M:%S:%3N")
 
             # Доклад об обнаружении

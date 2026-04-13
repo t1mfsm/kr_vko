@@ -319,46 +319,136 @@ get_latest_fresh_target_mtime() {
     local latest_mtime current_time
 
     latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null) || return 1
-    current_time=$(date +%s%3N 2>/dev/null || echo $(( $(date +%s) * 1000 )))
+    current_time=$(current_time_ms)
 
     (( current_time - latest_mtime > TARGET_STALE_SECONDS * 1000 )) && return 1
     echo "$latest_mtime"
+}
+
+current_time_ms() {
+    local now_ms
+    now_ms=$(date +%s%3N 2>/dev/null)
+    if [[ "$now_ms" =~ ^[0-9]+$ ]]; then
+        echo "$now_ms"
+    else
+        echo $(( $(date +%s) * 1000 ))
+    fi
+}
+
+write_shot_result() {
+    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" result="$5" result_dir="$6"
+    local result_msg kp_message
+
+    if [[ "$result" == "MISS" ]]; then
+        result_msg="ПРОМАХ по цели id:$target_id"
+        kp_message="MISS $target_id $shot_type"
+    else
+        result_msg="Цель id:$target_id УНИЧТОЖЕНА"
+        kp_message="DESTROYED $target_id $shot_type"
+    fi
+
+    log_message "$logfile" "$system_name" "$result_msg"
+    send_to_kp "$system_name" "$kp_message"
+    echo "[$system_name] $result_msg"
+    printf "%s\n" "$result" > "$result_dir/${system_name}_${target_id}"
+}
+
+get_generator_log_position() {
+    wc -l < "$GEN_TARGETS_LOG" 2>/dev/null || echo 0
+}
+
+wait_for_generator_result() {
+    local target_id="$1" system_name="$2" start_line="$3" timeout_seconds="$4"
+    local from_line
+
+    [[ -f "$GEN_TARGETS_LOG" ]] || return 1
+    from_line=$((start_line + 1))
+
+    timeout "${timeout_seconds}s" bash -s -- "$GEN_TARGETS_LOG" "$from_line" "$target_id" "$system_name" <<'EOF'
+log_path="$1"
+from_line="$2"
+target_id="$3"
+system_name="$4"
+
+tail -n +"$from_line" -F "$log_path" 2>/dev/null | while IFS= read -r line; do
+    [[ "$line" == *"$target_id"* ]] || continue
+    [[ "$line" == *"$system_name"* ]] || continue
+
+    if [[ "$line" == *"Промах"* ]] || [[ "$line" == *"Уничтожена"* ]]; then
+        printf "%s\n" "$line"
+        break
+    fi
+done
+EOF
 }
 
 # --- Асинхронная проверка результата выстрела ---
 # Результат пишется в temp/shot_results, чтобы основной цикл системы только
 # снимал блокировку по цели и не зависел от длинного ожидания.
 track_shot_result_async() {
-    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" observed_mtime="$5"
+    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" observed_mtime="$5" generator_log_start="${6:-0}"
     local result_dir="$TEMP_DIR/shot_results"
     mkdir -p "$result_dir"
 
     (
-        sleep "$SHOT_RESULT_DELAY"
+        local start_ms deadline_ms now_ms latest_mtime latest_fresh_mtime result_line log_wait_seconds
+        local first_post_shot_mtime=0 confirm_deadline_ms=0 result=""
 
-        local first_post_shot_mtime second_post_shot_mtime miss_msg destroy_msg
-        first_post_shot_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
+        start_ms=$(current_time_ms)
+        deadline_ms=$((start_ms + SHOT_RESULT_MAX_WAIT * 1000))
 
-        if (( first_post_shot_mtime > observed_mtime )); then
-            sleep "$SHOT_RESULT_CONFIRM_DELAY"
-            second_post_shot_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
-        else
-            second_post_shot_mtime=$first_post_shot_mtime
+        if (( SHOT_RESULT_DELAY > 0 )); then
+            sleep "$SHOT_RESULT_DELAY"
         fi
 
-        if (( second_post_shot_mtime > first_post_shot_mtime )); then
-            miss_msg="ПРОМАХ по цели id:$target_id"
-            log_message "$logfile" "$system_name" "$miss_msg"
-            send_to_kp "$system_name" "MISS $target_id $shot_type"
-            echo "[$system_name] $miss_msg"
-            printf "MISS\n" > "$result_dir/${system_name}_${target_id}"
-        else
-            destroy_msg="Цель id:$target_id УНИЧТОЖЕНА"
-            log_message "$logfile" "$system_name" "$destroy_msg"
-            send_to_kp "$system_name" "DESTROYED $target_id $shot_type"
-            echo "[$system_name] $destroy_msg"
-            printf "DESTROYED\n" > "$result_dir/${system_name}_${target_id}"
+        log_wait_seconds=$((SHOT_RESULT_MAX_WAIT - SHOT_RESULT_DELAY))
+        if (( log_wait_seconds < 1 )); then
+            log_wait_seconds=1
         fi
+
+        result_line=$(wait_for_generator_result "$target_id" "$system_name" "$generator_log_start" "$log_wait_seconds" 2>/dev/null || true)
+        if [[ -n "$result_line" ]]; then
+            if [[ "$result_line" == *"Промах"* ]]; then
+                result="MISS"
+            elif [[ "$result_line" == *"Уничтожена"* ]]; then
+                result="DESTROYED"
+            fi
+        fi
+
+        while [[ -z "$result" ]]; do
+            latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
+            latest_fresh_mtime=$(get_latest_fresh_target_mtime "$target_id" 2>/dev/null || echo 0)
+            now_ms=$(current_time_ms)
+
+            if (( first_post_shot_mtime == 0 )); then
+                if (( latest_mtime > observed_mtime )); then
+                    first_post_shot_mtime=$latest_mtime
+                    confirm_deadline_ms=$((now_ms + SHOT_RESULT_CONFIRM_DELAY * 1000))
+                elif (( latest_fresh_mtime == 0 )); then
+                    result="DESTROYED"
+                    break
+                fi
+            else
+                if (( latest_mtime > first_post_shot_mtime )); then
+                    result="MISS"
+                    break
+                fi
+
+                if (( latest_fresh_mtime == 0 )) || (( now_ms >= confirm_deadline_ms )); then
+                    result="DESTROYED"
+                    break
+                fi
+            fi
+
+            if (( now_ms >= deadline_ms )); then
+                result="${result:-DESTROYED}"
+                break
+            fi
+
+            sleep "$SHOT_RESULT_POLL_INTERVAL"
+        done
+
+        write_shot_result "$system_name" "$logfile" "$target_id" "$shot_type" "$result" "$result_dir"
     ) &
 }
 
