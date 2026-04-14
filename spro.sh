@@ -262,6 +262,7 @@ while true; do
 
             speed=$(calc_speed "$prev_x" "$prev_y" "$latest_x" "$latest_y")
             target_type=$(get_target_type "$speed")
+            [[ "$target_type" != "BB_BR" ]] && continue
             tx=$latest_x
             ty=$latest_y
             update_spro_track_from_marks "$target_id" "$target_type" "$prev_x" "$prev_y" "$prev_mtime" "$latest_x" "$latest_y" "$latest_mtime"
