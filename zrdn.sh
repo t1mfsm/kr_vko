@@ -59,6 +59,15 @@ clear_zrdn_track() {
     unset "tracked_last_seen_at[$target_id]"
 }
 
+drop_zrdn_target() {
+    local target_id="$1"
+    unset "pending_fire_targets[$target_id]"
+    unset "target_retry_deadlines[$target_id]"
+    unset "reported_targets[$target_id]"
+    unset "shot_targets[$target_id]"
+    clear_zrdn_track "$target_id"
+}
+
 update_zrdn_track_from_marks() {
     local target_id="$1" target_type="$2" prev_x="$3" prev_y="$4" prev_mtime="$5" latest_x="$6" latest_y="$7" latest_mtime="$8"
     local dt_ms vx vy
@@ -140,6 +149,10 @@ fire_zrdn_target() {
     local target_id="$1" target_type="$2" latest_mtime="$3"
     local shot_msg empty_msg generator_log_start
 
+    if is_target_destroyed "$target_id"; then
+        return 1
+    fi
+
     if (( AMMO <= 0 )); then
         return 1
     fi
@@ -175,6 +188,10 @@ try_pending_zrdn_targets() {
         target_type="${pending_fire_targets[$target_id]}"
         [[ -n "${shot_targets[$target_id]}" ]] && continue
         [[ "$target_type" != "SAM" && "$target_type" != "KR" ]] && continue
+        if is_target_destroyed "$target_id"; then
+            drop_zrdn_target "$target_id"
+            continue
+        fi
 
         if [[ -n "${current_targets[$target_id]}" ]]; then
             refresh_zrdn_track_from_current "$target_id"
@@ -188,6 +205,8 @@ try_pending_zrdn_targets() {
             reported_targets[$target_id]=1
             unset "pending_fire_targets[$target_id]"
             unset "target_retry_deadlines[$target_id]"
+        elif is_target_destroyed "$target_id"; then
+            drop_zrdn_target "$target_id"
         fi
     done
 }
@@ -234,6 +253,7 @@ while true; do
 
     while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
+        is_target_destroyed "$target_id" && continue
         # Проверка: цель в зоне ЗРДН (360 градусов)
         if is_in_range "$ZRDN_X" "$ZRDN_Y" "$ZRDN_RANGE" "$tx" "$ty"; then
             current_targets[$target_id]="$tx $ty"
@@ -275,7 +295,11 @@ while true; do
             # ЗРДН уничтожает только самолеты и крылатые ракеты
             if [[ "$target_type" == "SAM" || "$target_type" == "KR" ]]; then
                 if ! fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
-                    hold_zrdn_target_for_retry "$target_id" "$target_type"
+                    if is_target_destroyed "$target_id"; then
+                        drop_zrdn_target "$target_id"
+                    else
+                        hold_zrdn_target_for_retry "$target_id" "$target_type"
+                    fi
                 fi
             fi
         fi
@@ -288,12 +312,17 @@ while true; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
         result=$(cat "$result_file" 2>/dev/null)
-        shot_target_type="${shot_targets[$target_id]}"
+        shot_target_type="${shot_targets[$target_id]:-}"
         unset "shot_targets[$target_id]"
         rm -f "$result_file"
 
         if [[ -n "${current_targets[$target_id]}" ]]; then
             refresh_zrdn_track_from_current "$target_id"
+        fi
+
+        if [[ "$result" == "ALREADY_DESTROYED" ]] || is_target_destroyed "$target_id"; then
+            drop_zrdn_target "$target_id"
+            continue
         fi
 
         if [[ "$result" == "MISS" ]]; then
@@ -305,6 +334,9 @@ while true; do
                     unset "pending_fire_targets[$target_id]"
                     unset "target_retry_deadlines[$target_id]"
                     continue
+                elif is_target_destroyed "$target_id"; then
+                    drop_zrdn_target "$target_id"
+                    continue
                 fi
             fi
 
@@ -314,14 +346,16 @@ while true; do
             fi
         fi
 
-        unset "pending_fire_targets[$target_id]"
-        unset "target_retry_deadlines[$target_id]"
-        unset "reported_targets[$target_id]"
-        clear_zrdn_track "$target_id"
+        drop_zrdn_target "$target_id"
     done
 
     # Очистка пропавших целей
     for target_id in "${!reported_targets[@]}"; do
+        if is_target_destroyed "$target_id"; then
+            drop_zrdn_target "$target_id"
+            continue
+        fi
+
         if [[ -z "${current_targets[$target_id]}" ]] && [[ -z "${shot_targets[$target_id]}" ]]; then
             if [[ -n "${pending_fire_targets[$target_id]}" ]]; then
                 retry_deadline="${target_retry_deadlines[$target_id]:-0}"
@@ -330,10 +364,7 @@ while true; do
                 fi
             fi
 
-            unset "pending_fire_targets[$target_id]"
-            unset "target_retry_deadlines[$target_id]"
-            unset "reported_targets[$target_id]"
-            clear_zrdn_track "$target_id"
+            drop_zrdn_target "$target_id"
         fi
     done
 

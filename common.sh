@@ -49,6 +49,24 @@ cleanup() {
     rm -f "$PID_DIR/${name}.pid"
 }
 
+mark_target_destroyed() {
+    local target_id="$1" system_name="$2"
+    mkdir -p "$DESTROYED_TARGETS_DIR"
+    printf "%s\n" "$system_name" > "$DESTROYED_TARGETS_DIR/$target_id"
+}
+
+get_target_destroyed_by() {
+    local target_id="$1"
+    local marker_file="$DESTROYED_TARGETS_DIR/$target_id"
+    [[ -f "$marker_file" ]] || return 1
+    cat "$marker_file" 2>/dev/null
+}
+
+is_target_destroyed() {
+    local target_id="$1"
+    [[ -f "$DESTROYED_TARGETS_DIR/$target_id" ]]
+}
+
 # --- Декодирование ID цели из имени файла ---
 # Формат файла: interleaved random[2] + id_hex[2] по 7 пар, + 2 random hex
 # Итого 30 символов в имени
@@ -336,19 +354,24 @@ current_time_ms() {
 }
 
 write_shot_result() {
-    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" result="$5" result_dir="$6"
-    local result_msg kp_message
+    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" result="$5" result_dir="$6" destroyed_by="${7:-}"
+    local result_msg kp_message=""
 
     if [[ "$result" == "MISS" ]]; then
         result_msg="ПРОМАХ по цели id:$target_id"
         kp_message="MISS $target_id $shot_type"
-    else
+    elif [[ "$result" == "DESTROYED" ]]; then
+        mark_target_destroyed "$target_id" "$system_name"
         result_msg="Цель id:$target_id УНИЧТОЖЕНА"
         kp_message="DESTROYED $target_id $shot_type"
+    else
+        result_msg="Цель id:$target_id уже уничтожена системой ${destroyed_by:-UNKNOWN}"
     fi
 
     log_message "$logfile" "$system_name" "$result_msg"
-    send_to_kp "$system_name" "$kp_message"
+    if [[ -n "$kp_message" ]]; then
+        send_to_kp "$system_name" "$kp_message"
+    fi
     echo "[$system_name] $result_msg"
     printf "%s\n" "$result" > "$result_dir/${system_name}_${target_id}"
 }
@@ -392,7 +415,7 @@ track_shot_result_async() {
 
     (
         local start_ms deadline_ms now_ms latest_mtime latest_fresh_mtime result_line log_wait_seconds
-        local first_post_shot_mtime=0 confirm_deadline_ms=0 result=""
+        local first_post_shot_mtime=0 confirm_deadline_ms=0 result="" destroyed_by=""
 
         start_ms=$(current_time_ms)
         deadline_ms=$((start_ms + SHOT_RESULT_MAX_WAIT * 1000))
@@ -416,6 +439,12 @@ track_shot_result_async() {
         fi
 
         while [[ -z "$result" ]]; do
+            destroyed_by=$(get_target_destroyed_by "$target_id" 2>/dev/null || true)
+            if [[ -n "$destroyed_by" && "$destroyed_by" != "$system_name" ]]; then
+                result="ALREADY_DESTROYED"
+                break
+            fi
+
             latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
             latest_fresh_mtime=$(get_latest_fresh_target_mtime "$target_id" 2>/dev/null || echo 0)
             now_ms=$(current_time_ms)
@@ -448,7 +477,7 @@ track_shot_result_async() {
             sleep "$SHOT_RESULT_POLL_INTERVAL"
         done
 
-        write_shot_result "$system_name" "$logfile" "$target_id" "$shot_type" "$result" "$result_dir"
+        write_shot_result "$system_name" "$logfile" "$target_id" "$shot_type" "$result" "$result_dir" "$destroyed_by"
     ) &
 }
 

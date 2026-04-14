@@ -8,6 +8,7 @@ LOG_DIR="$BASE_DIR/logs"
 MSG_DIR="$BASE_DIR/messages"
 TEMP_DIR="$BASE_DIR/temp"
 PID_DIR="$BASE_DIR/pids"
+DESTROYED_TARGETS_DIR="$TEMP_DIR/destroyed_targets"
 
 TARGETS_DIR="/tmp/GenTargets/Targets"
 DESTROY_DIR="/tmp/GenTargets/Destroy"
