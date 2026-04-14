@@ -113,9 +113,9 @@ while true; do
         fi
     done
 
-    # Очистка данных о целях, которые больше не видны
+    # Очистка данных об уничтоженных целях
     for target_id in "${!reported_targets[@]}"; do
-        if [[ -z "${current_targets[$target_id]}" ]]; then
+        if is_target_destroyed "$target_id"; then
             unset "reported_targets[$target_id]"
             unset "reported_spro[$target_id]"
         fi

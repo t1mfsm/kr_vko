@@ -123,7 +123,7 @@ zrdn_track_retryable() {
     local target_type now_s last_seen last_x last_y last_mtime
 
     target_type="${tracked_target_types[$target_id]:-}"
-    [[ "$target_type" == "SAM" || "$target_type" == "KR" ]] || return 1
+    [[ "$target_type" == "SAM" || "$target_type" == "KR" || "$target_type" == "BB_BR" ]] || return 1
 
     last_seen="${tracked_last_seen_at[$target_id]:-0}"
     now_s=$(date +%s)
@@ -187,7 +187,7 @@ try_pending_zrdn_targets() {
     for target_id in "${!pending_fire_targets[@]}"; do
         target_type="${pending_fire_targets[$target_id]}"
         [[ -n "${shot_targets[$target_id]}" ]] && continue
-        [[ "$target_type" != "SAM" && "$target_type" != "KR" ]] && continue
+        [[ "$target_type" != "SAM" && "$target_type" != "KR" && "$target_type" != "BB_BR" ]] && continue
         if is_target_destroyed "$target_id"; then
             drop_zrdn_target "$target_id"
             continue
@@ -197,7 +197,6 @@ try_pending_zrdn_targets() {
             refresh_zrdn_track_from_current "$target_id"
         fi
 
-        zrdn_track_retryable "$target_id" || continue
         latest_mtime="${tracked_last_mtime[$target_id]:-0}"
         (( latest_mtime > 0 )) || continue
 
@@ -292,8 +291,8 @@ while true; do
 
             reported_targets[$target_id]=1
 
-            # ЗРДН уничтожает только самолеты и крылатые ракеты
-            if [[ "$target_type" == "SAM" || "$target_type" == "KR" ]]; then
+            # ЗРДН уничтожает самолеты, крылатые ракеты и ББ БР
+            if [[ "$target_type" == "SAM" || "$target_type" == "KR" || "$target_type" == "BB_BR" ]]; then
                 if ! fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
                     if is_target_destroyed "$target_id"; then
                         drop_zrdn_target "$target_id"
@@ -327,23 +326,17 @@ while true; do
 
         if [[ "$result" == "MISS" ]]; then
             target_type="$shot_target_type"
-            if zrdn_track_retryable "$target_id"; then
-                latest_mtime="${tracked_last_mtime[$target_id]:-0}"
-                if (( latest_mtime > 0 )) && fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
-                    reported_targets[$target_id]=1
-                    unset "pending_fire_targets[$target_id]"
-                    unset "target_retry_deadlines[$target_id]"
-                    continue
-                elif is_target_destroyed "$target_id"; then
-                    drop_zrdn_target "$target_id"
-                    continue
-                fi
-            fi
-
-            if [[ "$target_type" == "SAM" || "$target_type" == "KR" ]]; then
+            latest_mtime="${tracked_last_mtime[$target_id]:-0}"
+            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
+                reported_targets[$target_id]=1
+                unset "pending_fire_targets[$target_id]"
+                unset "target_retry_deadlines[$target_id]"
+            elif is_target_destroyed "$target_id"; then
+                drop_zrdn_target "$target_id"
+            else
                 hold_zrdn_target_for_retry "$target_id" "$target_type"
-                continue
             fi
+            continue
         fi
 
         drop_zrdn_target "$target_id"

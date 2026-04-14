@@ -108,7 +108,7 @@ spro_track_retryable() {
     local target_type now_s last_seen last_x last_y last_mtime
 
     target_type="${tracked_target_types[$target_id]:-}"
-    [[ "$target_type" == "BB_BR" ]] || return 1
+    [[ "$target_type" == "BB_BR" || "$target_type" == "KR" ]] || return 1
 
     last_seen="${tracked_last_seen_at[$target_id]:-0}"
     now_s=$(date +%s)
@@ -124,14 +124,14 @@ spro_track_retryable() {
 }
 
 hold_spro_target_for_retry() {
-    local target_id="$1"
-    pending_fire_targets[$target_id]="BB_BR"
+    local target_id="$1" target_type="${2:-BB_BR}"
+    pending_fire_targets[$target_id]="$target_type"
     reported_targets[$target_id]=1
     target_retry_deadlines[$target_id]=$(( $(date +%s) + TARGET_RETRY_HOLD_SECONDS ))
 }
 
 fire_spro_target() {
-    local target_id="$1" latest_mtime="$2"
+    local target_id="$1" target_type="$2" latest_mtime="$3"
     local shot_msg empty_msg generator_log_start
 
     if is_target_destroyed "$target_id"; then
@@ -145,12 +145,12 @@ fire_spro_target() {
     generator_log_start=$(get_generator_log_position)
     echo "$SPRO_NAME" > "$DESTROY_DIR/$target_id"
     ((AMMO--))
-    shot_targets[$target_id]="BB_BR"
-    track_shot_result_async "$SPRO_NAME" "$LOGFILE" "$target_id" "BB_BR" "$latest_mtime" "$generator_log_start"
+    shot_targets[$target_id]="$target_type"
+    track_shot_result_async "$SPRO_NAME" "$LOGFILE" "$target_id" "$target_type" "$latest_mtime" "$generator_log_start"
 
-    shot_msg="Стрельба по цели id:$target_id тип:BB_BR. Осталось противоракет: $AMMO"
+    shot_msg="Стрельба по цели id:$target_id тип:$target_type. Осталось противоракет: $AMMO"
     log_message "$LOGFILE" "$SPRO_NAME" "$shot_msg"
-    send_to_kp "$SPRO_NAME" "SHOT $target_id BB_BR AMMO:$AMMO"
+    send_to_kp "$SPRO_NAME" "SHOT $target_id $target_type AMMO:$AMMO"
     echo "[$SPRO_NAME] $shot_msg"
 
     if (( AMMO <= 0 )); then
@@ -172,7 +172,7 @@ try_pending_spro_targets() {
     for target_id in "${!pending_fire_targets[@]}"; do
         target_type="${pending_fire_targets[$target_id]}"
         [[ -n "${shot_targets[$target_id]}" ]] && continue
-        [[ "$target_type" != "BB_BR" ]] && continue
+        [[ "$target_type" != "BB_BR" && "$target_type" != "KR" ]] && continue
         if is_target_destroyed "$target_id"; then
             drop_spro_target "$target_id"
             continue
@@ -182,11 +182,10 @@ try_pending_spro_targets() {
             refresh_spro_track_from_current "$target_id"
         fi
 
-        spro_track_retryable "$target_id" || continue
         latest_mtime="${tracked_last_mtime[$target_id]:-0}"
         (( latest_mtime > 0 )) || continue
 
-        if fire_spro_target "$target_id" "$latest_mtime"; then
+        if fire_spro_target "$target_id" "$target_type" "$latest_mtime"; then
             reported_targets[$target_id]=1
             unset "pending_fire_targets[$target_id]"
             unset "target_retry_deadlines[$target_id]"
@@ -277,13 +276,13 @@ while true; do
 
             reported_targets[$target_id]=1
 
-            # СПРО уничтожает только ББ БР
-            if [[ "$target_type" == "BB_BR" ]]; then
-                if ! fire_spro_target "$target_id" "$latest_mtime"; then
+            # СПРО уничтожает ББ БР и крылатые ракеты
+            if [[ "$target_type" == "BB_BR" || "$target_type" == "KR" ]]; then
+                if ! fire_spro_target "$target_id" "$target_type" "$latest_mtime"; then
                     if is_target_destroyed "$target_id"; then
                         drop_spro_target "$target_id"
                     else
-                        hold_spro_target_for_retry "$target_id"
+                        hold_spro_target_for_retry "$target_id" "$target_type"
                     fi
                 fi
             fi
@@ -311,20 +310,16 @@ while true; do
         fi
 
         if [[ "$result" == "MISS" ]]; then
-            if spro_track_retryable "$target_id"; then
-                latest_mtime="${tracked_last_mtime[$target_id]:-0}"
-                if (( latest_mtime > 0 )) && fire_spro_target "$target_id" "$latest_mtime"; then
-                    reported_targets[$target_id]=1
-                    unset "pending_fire_targets[$target_id]"
-                    unset "target_retry_deadlines[$target_id]"
-                    continue
-                elif is_target_destroyed "$target_id"; then
-                    drop_spro_target "$target_id"
-                    continue
-                fi
+            latest_mtime="${tracked_last_mtime[$target_id]:-0}"
+            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime"; then
+                reported_targets[$target_id]=1
+                unset "pending_fire_targets[$target_id]"
+                unset "target_retry_deadlines[$target_id]"
+            elif is_target_destroyed "$target_id"; then
+                drop_spro_target "$target_id"
+            else
+                hold_spro_target_for_retry "$target_id" "$shot_target_type"
             fi
-
-            hold_spro_target_for_retry "$target_id"
             continue
         fi
 
