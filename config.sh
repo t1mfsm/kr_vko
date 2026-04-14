@@ -24,7 +24,7 @@ CHECK_INTERVAL=1
 TARGET_STALE_SECONDS=2
 
 # Задержка перед фиксацией результата выстрела
-SHOT_RESULT_DELAY=2
+SHOT_RESULT_DELAY=0
 
 # Максимально допустимое время между выстрелом и публикацией результата
 SHOT_RESULT_MAX_WAIT=10
