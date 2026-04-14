@@ -108,7 +108,7 @@ spro_track_retryable() {
     local target_type now_s last_seen last_x last_y last_mtime
 
     target_type="${tracked_target_types[$target_id]:-}"
-    [[ "$target_type" == "BB_BR" || "$target_type" == "KR" ]] || return 1
+    [[ "$target_type" == "BB_BR" ]] || return 1
 
     last_seen="${tracked_last_seen_at[$target_id]:-0}"
     now_s=$(date +%s)
@@ -172,7 +172,7 @@ try_pending_spro_targets() {
     for target_id in "${!pending_fire_targets[@]}"; do
         target_type="${pending_fire_targets[$target_id]}"
         [[ -n "${shot_targets[$target_id]}" ]] && continue
-        [[ "$target_type" != "BB_BR" && "$target_type" != "KR" ]] && continue
+        [[ "$target_type" != "BB_BR" ]] && continue
         if is_target_destroyed "$target_id"; then
             drop_spro_target "$target_id"
             continue
@@ -276,8 +276,8 @@ while true; do
 
             reported_targets[$target_id]=1
 
-            # СПРО уничтожает ББ БР и крылатые ракеты
-            if [[ "$target_type" == "BB_BR" || "$target_type" == "KR" ]]; then
+            # СПРО уничтожает только ББ БР
+            if [[ "$target_type" == "BB_BR" ]]; then
                 if ! fire_spro_target "$target_id" "$target_type" "$latest_mtime"; then
                     if is_target_destroyed "$target_id"; then
                         drop_spro_target "$target_id"
