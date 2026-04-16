@@ -422,11 +422,6 @@ write_shot_result() {
         result_msg="Цель id:$target_id уже уничтожена системой ${destroyed_by:-UNKNOWN}"
     fi
 
-    # Косметическая задержка нужна только для порядка вывода в общей консоли:
-    # GenTargets должен успеть напечатать свой результат раньше, чем
-    # СПРО/ЗРДН продублируют его в своих журналах и на КП.
-    sleep 1
-
     log_message "$logfile" "$system_name" "$result_msg"
     if [[ -n "$kp_message" ]]; then
         send_to_kp "$system_name" "$kp_message"
@@ -473,10 +468,11 @@ track_shot_result_async() {
     mkdir -p "$result_dir"
 
     (
-        local start_ms deadline_ms now_ms generator_result result="" destroyed_by=""
+        local start_ms deadline_ms failsafe_deadline_ms now_ms latest_mtime generator_result result="" destroyed_by=""
 
         start_ms=$(current_time_ms)
         deadline_ms=$((start_ms + SHOT_RESULT_MAX_WAIT * 1000))
+        failsafe_deadline_ms=$((start_ms + SHOT_RESULT_FAILSAFE_WAIT * 1000))
 
         if (( SHOT_RESULT_DELAY > 0 )); then
             sleep "$SHOT_RESULT_DELAY"
@@ -495,9 +491,17 @@ track_shot_result_async() {
                 break
             fi
 
+            latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
             now_ms=$(current_time_ms)
 
-            if (( now_ms >= deadline_ms )); then
+            # После выстрела появилась новая отметка этой же цели: генератор
+            # продолжил сопровождение, значит выстрел был неуспешным.
+            if (( latest_mtime > observed_mtime )) && (( now_ms >= deadline_ms )); then
+                result="MISS"
+                break
+            fi
+
+            if (( now_ms >= failsafe_deadline_ms )); then
                 result="${result:-MISS}"
                 break
             fi
