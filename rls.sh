@@ -27,6 +27,11 @@ check_single_instance "$RLS_NAME"
 trap "cleanup '$RLS_NAME'; exit 0" SIGTERM SIGINT EXIT
 
 LOGFILE="$LOG_DIR/${RLS_NAME}.log"
+RLS_STATE_DIR="$TEMP_DIR/rls_seen/${RLS_NAME}"
+RLS_DETECT_DIR="$RLS_STATE_DIR/detect"
+RLS_SPRO_DIR="$RLS_STATE_DIR/spro"
+
+mkdir -p "$RLS_DETECT_DIR" "$RLS_SPRO_DIR"
 
 echo "[$RLS_NAME] Запуск РЛС типа $RLS_TYPE"
 echo "[$RLS_NAME] Координаты: X=$RLS_X Y=$RLS_Y"
@@ -38,6 +43,35 @@ send_to_kp "$RLS_NAME" "STATUS $RLS_NAME ONLINE"
 # Ассоциативные массивы для отслеживания целей
 declare -A reported_targets   # ID -> 1 (уже доложенные цели)
 declare -A reported_spro      # ID -> 1 (уже доложенные о движении к СПРО)
+
+has_rls_detect_report() {
+    local target_id="$1"
+    [[ -n "${reported_targets[$target_id]}" || -f "$RLS_DETECT_DIR/$target_id" ]]
+}
+
+mark_rls_detect_report() {
+    local target_id="$1"
+    reported_targets[$target_id]=1
+    : > "$RLS_DETECT_DIR/$target_id"
+}
+
+has_rls_spro_report() {
+    local target_id="$1"
+    [[ -n "${reported_spro[$target_id]}" || -f "$RLS_SPRO_DIR/$target_id" ]]
+}
+
+mark_rls_spro_report() {
+    local target_id="$1"
+    reported_spro[$target_id]=1
+    : > "$RLS_SPRO_DIR/$target_id"
+}
+
+clear_rls_reports() {
+    local target_id="$1"
+    unset "reported_targets[$target_id]"
+    unset "reported_spro[$target_id]"
+    rm -f "$RLS_DETECT_DIR/$target_id" "$RLS_SPRO_DIR/$target_id"
+}
 
 while true; do
     # Проверка heartbeat запроса от КП
@@ -64,6 +98,7 @@ while true; do
 
     while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
+        is_target_destroyed "$target_id" && continue
         # Проверка: цель в секторе РЛС
         if is_in_sector "$RLS_X" "$RLS_Y" "$RLS_RANGE" "$RLS_ANGLE" "$RLS_SECTOR" "$tx" "$ty"; then
             current_targets[$target_id]="$tx $ty"
@@ -75,7 +110,7 @@ while true; do
         tx=$(echo "${current_targets[$target_id]}" | awk '{print $1}')
         ty=$(echo "${current_targets[$target_id]}" | awk '{print $2}')
 
-        if [[ -z "${reported_targets[$target_id]}" ]]; then
+        if ! has_rls_detect_report "$target_id"; then
             track=$(get_latest_two_visible_marks "sector" "$target_id" "$RLS_X" "$RLS_Y" "$RLS_RANGE" "$RLS_ANGLE" "$RLS_SECTOR") || continue
             read -r prev_x prev_y prev_mtime latest_x latest_y latest_mtime <<< "$track"
             (( latest_mtime <= prev_mtime )) && continue
@@ -98,26 +133,18 @@ while true; do
             # Проверка: если БР движется в сторону СПРО
             if [[ "$target_type" == "BB_BR" ]]; then
                 if is_moving_toward_spro "$prev_x" "$prev_y" "$tx" "$ty"; then
-                    if [[ -z "${reported_spro[$target_id]}" ]]; then
+                    if ! has_rls_spro_report "$target_id"; then
                         spro_msg="Цель id:$target_id движется в направлении СПРО"
                         log_message "$LOGFILE" "$RLS_NAME" "$spro_msg"
                         send_to_kp "$RLS_NAME" "SPRO_ALERT $target_id $tx $ty $speed"
                         echo "[$RLS_NAME] $spro_msg"
-                        reported_spro[$target_id]=1
+                        mark_rls_spro_report "$target_id"
                     fi
                 fi
             fi
 
-            reported_targets[$target_id]=1
+            mark_rls_detect_report "$target_id"
             # Цель не сопровождается после выдачи информации на КП
-        fi
-    done
-
-    # Очистка данных об уничтоженных целях
-    for target_id in "${!reported_targets[@]}"; do
-        if is_target_destroyed "$target_id"; then
-            unset "reported_targets[$target_id]"
-            unset "reported_spro[$target_id]"
         fi
     done
 
