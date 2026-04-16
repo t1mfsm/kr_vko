@@ -65,6 +65,7 @@ drop_zrdn_target() {
     unset "target_retry_deadlines[$target_id]"
     unset "reported_targets[$target_id]"
     unset "shot_targets[$target_id]"
+    release_target_engagement "$target_id" "$ZRDN_NAME" 2>/dev/null || true
     clear_zrdn_track "$target_id"
 }
 
@@ -178,6 +179,10 @@ fire_zrdn_target() {
     fi
 
     if (( AMMO <= 0 )); then
+        return 1
+    fi
+
+    if ! claim_target_engagement "$target_id" "$ZRDN_NAME"; then
         return 1
     fi
 

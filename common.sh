@@ -67,6 +67,60 @@ is_target_destroyed() {
     [[ -f "$DESTROYED_TARGETS_DIR/$target_id" ]]
 }
 
+ENGAGEMENT_DIR="$TEMP_DIR/engagements"
+
+get_engagement_owner() {
+    local target_id="$1"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    [[ -f "$lock_dir/owner" ]] || return 1
+    cat "$lock_dir/owner" 2>/dev/null
+}
+
+release_target_engagement() {
+    local target_id="$1" system_name="${2:-}"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    local owner
+
+    [[ -d "$lock_dir" ]] || return 0
+    owner=$(get_engagement_owner "$target_id" 2>/dev/null || true)
+    if [[ -n "$system_name" && -n "$owner" && "$owner" != "$system_name" ]]; then
+        return 1
+    fi
+
+    rm -rf "$lock_dir"
+}
+
+claim_target_engagement() {
+    local target_id="$1" system_name="$2"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    local owner now_s lock_age
+
+    mkdir -p "$ENGAGEMENT_DIR"
+
+    if mkdir "$lock_dir" 2>/dev/null; then
+        printf "%s\n" "$system_name" > "$lock_dir/owner"
+        return 0
+    fi
+
+    owner=$(get_engagement_owner "$target_id" 2>/dev/null || true)
+    if [[ "$owner" == "$system_name" ]]; then
+        touch "$lock_dir" 2>/dev/null || true
+        return 0
+    fi
+
+    now_s=$(date +%s)
+    lock_age=$(( now_s - $(stat -c %Y "$lock_dir" 2>/dev/null || stat -f %m "$lock_dir" 2>/dev/null || echo "$now_s") ))
+    if (( lock_age > TARGET_RETRY_HOLD_SECONDS )); then
+        rm -rf "$lock_dir"
+        if mkdir "$lock_dir" 2>/dev/null; then
+            printf "%s\n" "$system_name" > "$lock_dir/owner"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # --- Декодирование ID цели из имени файла ---
 # Формат файла: interleaved random[2] + id_hex[2] по 7 пар, + 2 random hex
 # Итого 30 символов в имени
