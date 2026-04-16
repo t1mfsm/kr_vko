@@ -184,6 +184,17 @@ resolve_zrdn_retry_mtime() {
     fi
 }
 
+get_zrdn_hot_retry_mtime() {
+    local target_id="$1" fallback_mtime="${2:-0}"
+    local tracked_mtime="${tracked_last_mtime[$target_id]:-0}"
+
+    if (( tracked_mtime > fallback_mtime )); then
+        echo "$tracked_mtime"
+    else
+        echo "$fallback_mtime"
+    fi
+}
+
 fire_zrdn_target() {
     local target_id="$1" target_type="$2" latest_mtime="$3" retry_owner="${4:-0}"
     local shot_msg empty_msg generator_log_start
@@ -281,7 +292,7 @@ process_zrdn_shot_results() {
 
         if [[ "$result" == "MISS" ]]; then
             target_type="$shot_target_type"
-            latest_mtime=$(resolve_zrdn_retry_mtime "$target_id" "${shot_last_mtime:-0}")
+            latest_mtime=$(get_zrdn_hot_retry_mtime "$target_id" "${shot_last_mtime:-0}")
             if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_zrdn_target "$target_id" "$target_type" "$latest_mtime" 1; then
                 reported_targets[$target_id]=1
                 unset "pending_fire_targets[$target_id]"
@@ -337,6 +348,13 @@ while true; do
     # Сначала обрабатываем готовые результаты выстрелов, чтобы повторный пуск
     # после промаха не ждал полного сканирования целей.
     process_zrdn_shot_results
+
+    # Пока по цели ожидается результат выстрела, крутим горячий цикл без
+    # дорогого scan_targets: это ускоряет повторный пуск после промаха.
+    if (( ${#shot_targets[@]} > 0 )); then
+        sleep "$SHOT_RESULT_POLL_INTERVAL"
+        continue
+    fi
 
     # Сканирование целей
     current_targets=()
