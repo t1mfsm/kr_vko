@@ -380,29 +380,29 @@ get_generator_log_position() {
     wc -l < "$GEN_TARGETS_LOG" 2>/dev/null || echo 0
 }
 
-wait_for_generator_result() {
-    local target_id="$1" system_name="$2" start_line="$3" timeout_seconds="$4"
-    local from_line
+get_generator_result_since() {
+    local start_line="$1" target_id="$2" system_name="$3"
+    local from_line line
 
     [[ -f "$GEN_TARGETS_LOG" ]] || return 1
     from_line=$((start_line + 1))
 
-    timeout "${timeout_seconds}s" bash -s -- "$GEN_TARGETS_LOG" "$from_line" "$target_id" "$system_name" <<'EOF'
-log_path="$1"
-from_line="$2"
-target_id="$3"
-system_name="$4"
+    while IFS= read -r line; do
+        [[ "$line" == *"$target_id"* ]] || continue
+        [[ "$line" == *"$system_name"* ]] || continue
 
-tail -n +"$from_line" -F "$log_path" 2>/dev/null | while IFS= read -r line; do
-    [[ "$line" == *"$target_id"* ]] || continue
-    [[ "$line" == *"$system_name"* ]] || continue
+        if [[ "$line" == *"Промах"* ]]; then
+            echo "MISS"
+            return 0
+        fi
 
-    if [[ "$line" == *"Промах"* ]] || [[ "$line" == *"Уничтожена"* ]]; then
-        printf "%s\n" "$line"
-        break
-    fi
-done
-EOF
+        if [[ "$line" == *"Уничтожена"* ]]; then
+            echo "DESTROYED"
+            return 0
+        fi
+    done < <(sed -n "${from_line},\$p" "$GEN_TARGETS_LOG" 2>/dev/null)
+
+    return 1
 }
 
 # --- Асинхронная проверка результата выстрела ---
@@ -414,7 +414,7 @@ track_shot_result_async() {
     mkdir -p "$result_dir"
 
     (
-        local start_ms deadline_ms now_ms latest_mtime result="" destroyed_by=""
+        local start_ms deadline_ms now_ms latest_mtime generator_result result="" destroyed_by=""
 
         start_ms=$(current_time_ms)
         deadline_ms=$((start_ms + SHOT_RESULT_MAX_WAIT * 1000))
@@ -430,20 +430,19 @@ track_shot_result_async() {
                 break
             fi
 
-            latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
-            now_ms=$(current_time_ms)
-
-            # По ТЗ новая отметка после выстрела означает, что цель продолжает
-            # генерироваться, следовательно, пуск был неуспешен.
-            if (( latest_mtime > observed_mtime )); then
-                result="MISS"
+            generator_result=$(get_generator_result_since "$generator_log_start" "$target_id" "$system_name" 2>/dev/null || true)
+            if [[ "$generator_result" == "MISS" || "$generator_result" == "DESTROYED" ]]; then
+                result="$generator_result"
                 break
             fi
 
-            # Если за окно подтверждения новой отметки не появилось, считаем
-            # цель уничтоженной.
-            if (( now_ms - start_ms >= SHOT_RESULT_DESTROY_CONFIRM_MS )); then
-                result="DESTROYED"
+            latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
+            now_ms=$(current_time_ms)
+
+            # Новая отметка после выстрела означает, что цель продолжает
+            # генерироваться, следовательно, пуск был неуспешен.
+            if (( latest_mtime > observed_mtime )); then
+                result="MISS"
                 break
             fi
 

@@ -156,7 +156,7 @@ get_spro_retry_mtime() {
 
 fire_spro_target() {
     local target_id="$1" target_type="$2" latest_mtime="$3"
-    local shot_msg empty_msg
+    local shot_msg empty_msg generator_log_start
 
     if is_target_destroyed "$target_id"; then
         return 1
@@ -166,10 +166,11 @@ fire_spro_target() {
         return 1
     fi
 
+    generator_log_start=$(get_generator_log_position)
     echo "$SPRO_NAME" > "$DESTROY_DIR/$target_id"
     ((AMMO--))
     shot_targets[$target_id]="$target_type"
-    track_shot_result_async "$SPRO_NAME" "$LOGFILE" "$target_id" "$target_type" "$latest_mtime"
+    track_shot_result_async "$SPRO_NAME" "$LOGFILE" "$target_id" "$target_type" "$latest_mtime" "$generator_log_start"
 
     shot_msg="Стрельба по цели id:$target_id тип:$target_type. Осталось противоракет: $AMMO"
     log_message "$LOGFILE" "$SPRO_NAME" "$shot_msg"
