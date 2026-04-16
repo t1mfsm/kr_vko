@@ -296,6 +296,7 @@ while true; do
 
             speed=$(calc_speed "$prev_x" "$prev_y" "$latest_x" "$latest_y")
             target_type=$(get_target_type "$speed")
+            [[ "$target_type" != "SAM" && "$target_type" != "KR" ]] && continue
             tx=$latest_x
             ty=$latest_y
             update_zrdn_track_from_marks "$target_id" "$target_type" "$prev_x" "$prev_y" "$prev_mtime" "$latest_x" "$latest_y" "$latest_mtime"
@@ -311,22 +312,18 @@ while true; do
             reported_targets[$target_id]=1
 
             # ЗРДН уничтожает только самолеты и крылатые ракеты на второй засечке.
-            if [[ "$target_type" == "SAM" || "$target_type" == "KR" ]]; then
-                if ! fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
-                    if is_target_destroyed "$target_id"; then
-                        drop_zrdn_target "$target_id"
-                    else
-                        hold_zrdn_target_for_retry "$target_id" "$target_type"
-                    fi
+            if ! fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
+                if is_target_destroyed "$target_id"; then
+                    drop_zrdn_target "$target_id"
+                else
+                    hold_zrdn_target_for_retry "$target_id" "$target_type"
                 fi
             fi
         fi
     done
 
-    try_pending_zrdn_targets
-
-    # Фоновый трекер публикует промах/поражение не дольше чем за SHOT_RESULT_MAX_WAIT.
-    # После промаха повторный пуск выполняется ближайшим циклом, поэтому укладываемся в 7 секунд.
+    # Сначала разбираем результаты уже выполненных выстрелов, чтобы при промахе
+    # успеть выпустить повторную ракету в этом же цикле.
     for result_file in "$TEMP_DIR/shot_results/${ZRDN_NAME}_"*; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
@@ -361,6 +358,8 @@ while true; do
 
         drop_zrdn_target "$target_id"
     done
+
+    try_pending_zrdn_targets
 
     # Очистка пропавших целей
     for target_id in "${!reported_targets[@]}"; do

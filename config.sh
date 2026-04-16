@@ -27,18 +27,18 @@ TARGET_STALE_SECONDS=2
 SHOT_RESULT_DELAY=0
 
 # Максимально допустимое время между выстрелом и публикацией результата.
-SHOT_RESULT_MAX_WAIT=4
+SHOT_RESULT_MAX_WAIT=3
 
 # Через сколько миллисекунд после выстрела можно считать цель пораженной,
 # если новая отметка так и не появилась.
-SHOT_RESULT_DESTROY_CONFIRM_MS=2500
+SHOT_RESULT_DESTROY_CONFIRM_MS=1500
 
 # Шаг опроса при ожидании результата выстрела
-SHOT_RESULT_POLL_INTERVAL=0.25
+SHOT_RESULT_POLL_INTERVAL=0.1
 
 # Как долго удерживать цель в сопровождении после промаха или при ожидании
 # отложенного выстрела, даже если отметка временно пропала из current_targets.
-TARGET_RETRY_HOLD_SECONDS=7
+TARGET_RETRY_HOLD_SECONDS=3
 
 # Интервал проверки работоспособности КП (секунды)
 HEARTBEAT_INTERVAL=30

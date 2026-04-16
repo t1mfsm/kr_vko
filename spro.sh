@@ -309,10 +309,8 @@ while true; do
         fi
     done
 
-    try_pending_spro_targets
-
-    # Фоновый трекер публикует промах/поражение не дольше чем за SHOT_RESULT_MAX_WAIT.
-    # После промаха повторный пуск выполняется ближайшим циклом, поэтому укладываемся в 7 секунд.
+    # Сначала разбираем результаты уже выполненных выстрелов, чтобы при промахе
+    # успеть выпустить повторную противоракету в этом же цикле.
     for result_file in "$TEMP_DIR/shot_results/${SPRO_NAME}_"*; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${SPRO_NAME}_}"
@@ -346,6 +344,8 @@ while true; do
 
         drop_spro_target "$target_id"
     done
+
+    try_pending_spro_targets
 
     # Очистка данных о пропавших целях
     for target_id in "${!reported_targets[@]}"; do
