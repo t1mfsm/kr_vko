@@ -170,7 +170,7 @@ resolve_spro_retry_mtime() {
 }
 
 fire_spro_target() {
-    local target_id="$1" target_type="$2" latest_mtime="$3"
+    local target_id="$1" target_type="$2" latest_mtime="$3" retry_owner="${4:-0}"
     local shot_msg empty_msg generator_log_start
 
     if is_target_destroyed "$target_id"; then
@@ -181,8 +181,16 @@ fire_spro_target() {
         return 1
     fi
 
-    if ! claim_target_engagement "$target_id" "$SPRO_NAME"; then
-        return 1
+    if (( retry_owner )); then
+        if [[ "$(get_engagement_owner "$target_id" 2>/dev/null || true)" != "$SPRO_NAME" ]]; then
+            if ! claim_target_engagement "$target_id" "$SPRO_NAME"; then
+                return 1
+            fi
+        fi
+    else
+        if ! claim_target_engagement "$target_id" "$SPRO_NAME"; then
+            return 1
+        fi
     fi
 
     generator_log_start=$(get_generator_log_position)
@@ -258,7 +266,7 @@ process_spro_shot_results() {
 
         if [[ "$result" == "MISS" ]]; then
             latest_mtime=$(resolve_spro_retry_mtime "$target_id" "${shot_last_mtime:-0}")
-            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime"; then
+            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime" 1; then
                 reported_targets[$target_id]=1
                 unset "pending_fire_targets[$target_id]"
                 unset "target_retry_deadlines[$target_id]"
