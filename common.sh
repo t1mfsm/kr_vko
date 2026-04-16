@@ -368,6 +368,11 @@ write_shot_result() {
         result_msg="Цель id:$target_id уже уничтожена системой ${destroyed_by:-UNKNOWN}"
     fi
 
+    # Небольшая косметическая задержка нужна только для вывода:
+    # GenTargets обычно успевает напечатать свой результат раньше, чем
+    # СПРО/ЗРДН продублируют его в своих журналах и на КП.
+    sleep 0.5
+
     log_message "$logfile" "$system_name" "$result_msg"
     if [[ -n "$kp_message" ]]; then
         send_to_kp "$system_name" "$kp_message"
