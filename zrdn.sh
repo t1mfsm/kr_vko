@@ -37,7 +37,7 @@ send_to_kp "$ZRDN_NAME" "STATUS $ZRDN_NAME ONLINE AMMO:$AMMO"
 
 # Ассоциативные массивы
 declare -A reported_targets   # ID -> 1
-declare -A shot_targets       # ID -> "shot_time:last_seen_mtime:target_type"
+declare -A shot_targets       # ID -> target_type
 declare -A pending_fire_targets  # ID -> target_type
 declare -A target_retry_deadlines # ID -> epoch seconds
 declare -A tracked_target_types
@@ -123,7 +123,7 @@ zrdn_track_retryable() {
     local target_type now_s last_seen last_x last_y last_mtime
 
     target_type="${tracked_target_types[$target_id]:-}"
-    [[ "$target_type" == "SAM" || "$target_type" == "KR" || "$target_type" == "BB_BR" ]] || return 1
+    [[ "$target_type" == "SAM" || "$target_type" == "KR" ]] || return 1
 
     last_seen="${tracked_last_seen_at[$target_id]:-0}"
     now_s=$(date +%s)
@@ -187,7 +187,7 @@ try_pending_zrdn_targets() {
     for target_id in "${!pending_fire_targets[@]}"; do
         target_type="${pending_fire_targets[$target_id]}"
         [[ -n "${shot_targets[$target_id]}" ]] && continue
-        [[ "$target_type" != "SAM" && "$target_type" != "KR" && "$target_type" != "BB_BR" ]] && continue
+        [[ "$target_type" != "SAM" && "$target_type" != "KR" ]] && continue
         if is_target_destroyed "$target_id"; then
             drop_zrdn_target "$target_id"
             continue
@@ -291,8 +291,8 @@ while true; do
 
             reported_targets[$target_id]=1
 
-            # ЗРДН уничтожает самолеты, крылатые ракеты и ББ БР
-            if [[ "$target_type" == "SAM" || "$target_type" == "KR" || "$target_type" == "BB_BR" ]]; then
+            # ЗРДН уничтожает только самолеты и крылатые ракеты на второй засечке.
+            if [[ "$target_type" == "SAM" || "$target_type" == "KR" ]]; then
                 if ! fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
                     if is_target_destroyed "$target_id"; then
                         drop_zrdn_target "$target_id"
@@ -306,7 +306,8 @@ while true; do
 
     try_pending_zrdn_targets
 
-    # Снятие блокировки по целям, для которых фоновый трекер уже определил результат
+    # Фоновый трекер публикует промах/поражение не дольше чем за SHOT_RESULT_MAX_WAIT.
+    # После промаха повторный пуск выполняется ближайшим циклом, поэтому укладываемся в 7 секунд.
     for result_file in "$TEMP_DIR/shot_results/${ZRDN_NAME}_"*; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"

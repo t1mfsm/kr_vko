@@ -18,7 +18,7 @@ GEN_TARGETS_LOG="/tmp/GenTargets/GenTargets.log"
 HMAC_KEY="VKO_SECRET_KEY_2024_kr"
 
 # Интервал проверки целей (секунды)
-CHECK_INTERVAL=1
+CHECK_INTERVAL=0.5
 
 # Через сколько секунд считать отметку цели устаревшей, если новых файлов не было
 TARGET_STALE_SECONDS=2
@@ -26,19 +26,20 @@ TARGET_STALE_SECONDS=2
 # Задержка перед фиксацией результата выстрела
 SHOT_RESULT_DELAY=0
 
-# Максимально допустимое время между выстрелом и публикацией результата
-SHOT_RESULT_MAX_WAIT=10
+# Максимально допустимое время между выстрелом и публикацией результата.
+# Держим запас относительно требования "не более 7 секунд".
+SHOT_RESULT_MAX_WAIT=6
 
 # Дополнительное окно подтверждения: помогает отличить реальный промах
 # от одиночной промежуточной отметки сразу после выстрела.
-SHOT_RESULT_CONFIRM_DELAY=3
+SHOT_RESULT_CONFIRM_DELAY=2
 
 # Шаг опроса при ожидании результата выстрела
-SHOT_RESULT_POLL_INTERVAL=1
+SHOT_RESULT_POLL_INTERVAL=0.5
 
 # Как долго удерживать цель в сопровождении после промаха или при ожидании
 # отложенного выстрела, даже если отметка временно пропала из current_targets.
-TARGET_RETRY_HOLD_SECONDS=180
+TARGET_RETRY_HOLD_SECONDS=7
 
 # Интервал проверки работоспособности КП (секунды)
 HEARTBEAT_INTERVAL=30

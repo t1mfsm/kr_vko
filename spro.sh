@@ -22,7 +22,7 @@ send_to_kp "$SPRO_NAME" "STATUS $SPRO_NAME ONLINE AMMO:$AMMO"
 
 # Ассоциативные массивы
 declare -A reported_targets   # ID -> 1
-declare -A shot_targets       # ID -> "shot_time:last_seen_mtime:target_type"
+declare -A shot_targets       # ID -> target_type
 declare -A pending_fire_targets  # ID -> target_type
 declare -A target_retry_deadlines # ID -> epoch seconds
 declare -A tracked_target_types
@@ -277,7 +277,7 @@ while true; do
 
             reported_targets[$target_id]=1
 
-            # СПРО уничтожает только ББ БР
+            # СПРО уничтожает только ББ БР на второй засечке.
             if [[ "$target_type" == "BB_BR" ]]; then
                 if ! fire_spro_target "$target_id" "$target_type" "$latest_mtime"; then
                     if is_target_destroyed "$target_id"; then
@@ -292,7 +292,8 @@ while true; do
 
     try_pending_spro_targets
 
-    # Снятие блокировки по целям, для которых фоновый трекер уже определил результат
+    # Фоновый трекер публикует промах/поражение не дольше чем за SHOT_RESULT_MAX_WAIT.
+    # После промаха повторный пуск выполняется ближайшим циклом, поэтому укладываемся в 7 секунд.
     for result_file in "$TEMP_DIR/shot_results/${SPRO_NAME}_"*; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${SPRO_NAME}_}"
