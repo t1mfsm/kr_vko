@@ -155,6 +155,18 @@ get_spro_retry_mtime() {
     echo "$latest_mtime"
 }
 
+resolve_spro_retry_mtime() {
+    local target_id="$1" fallback_mtime="${2:-0}"
+    local latest_mtime=0
+
+    latest_mtime=$(get_spro_retry_mtime "$target_id" 2>/dev/null || echo 0)
+    if (( latest_mtime > fallback_mtime )); then
+        echo "$latest_mtime"
+    else
+        echo "$fallback_mtime"
+    fi
+}
+
 fire_spro_target() {
     local target_id="$1" target_type="$2" latest_mtime="$3"
     local shot_msg empty_msg generator_log_start
@@ -337,7 +349,7 @@ while true; do
         fi
 
         if [[ "$result" == "MISS" ]]; then
-            latest_mtime=$(get_spro_retry_mtime "$target_id" 2>/dev/null || echo "${shot_last_mtime:-0}")
+            latest_mtime=$(resolve_spro_retry_mtime "$target_id" "${shot_last_mtime:-0}")
             if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime"; then
                 reported_targets[$target_id]=1
                 unset "pending_fire_targets[$target_id]"
