@@ -414,7 +414,7 @@ track_shot_result_async() {
     mkdir -p "$result_dir"
 
     (
-        local start_ms deadline_ms now_ms latest_mtime generator_result result="" destroyed_by=""
+        local start_ms deadline_ms now_ms latest_mtime latest_fresh_mtime generator_result result="" destroyed_by=""
 
         start_ms=$(current_time_ms)
         deadline_ms=$((start_ms + SHOT_RESULT_MAX_WAIT * 1000))
@@ -437,6 +437,7 @@ track_shot_result_async() {
             fi
 
             latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
+            latest_fresh_mtime=$(get_latest_fresh_target_mtime "$target_id" 2>/dev/null || echo 0)
             now_ms=$(current_time_ms)
 
             # Новая отметка после выстрела означает, что цель продолжает
@@ -446,8 +447,16 @@ track_shot_result_async() {
                 break
             fi
 
+            # Если генератор ещё не написал явный результат, считаем цель
+            # уничтоженной только когда после выстрела достаточно долго нет
+            # ни одной свежей отметки цели.
+            if (( now_ms - start_ms >= TARGET_STALE_SECONDS * 1000 )) && (( latest_fresh_mtime == 0 )); then
+                result="DESTROYED"
+                break
+            fi
+
             if (( now_ms >= deadline_ms )); then
-                result="${result:-DESTROYED}"
+                result="${result:-MISS}"
                 break
             fi
 
