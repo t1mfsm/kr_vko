@@ -329,12 +329,16 @@ while true; do
     done < <(scan_targets)
 
     for target_id in "${!current_targets[@]}"; do
+        process_spro_shot_results
+
         if [[ -n "${tracked_target_types[$target_id]}" ]] || [[ -n "${pending_fire_targets[$target_id]}" ]] || [[ -n "${shot_targets[$target_id]}" ]]; then
             refresh_spro_track_from_current "$target_id"
         fi
     done
 
     for target_id in "${!current_targets[@]}"; do
+        process_spro_shot_results
+
         tx=$(echo "${current_targets[$target_id]}" | awk '{print $1}')
         ty=$(echo "${current_targets[$target_id]}" | awk '{print $2}')
 
