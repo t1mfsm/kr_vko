@@ -232,6 +232,46 @@ try_pending_spro_targets() {
     done
 }
 
+process_spro_shot_results() {
+    local result_file target_id result shot_info shot_target_type shot_last_mtime latest_mtime
+
+    for result_file in "$TEMP_DIR/shot_results/${SPRO_NAME}_"*; do
+        [[ -f "$result_file" ]] || continue
+        target_id="${result_file##${TEMP_DIR}/shot_results/${SPRO_NAME}_}"
+        result=$(cat "$result_file" 2>/dev/null)
+        shot_info="${shot_targets[$target_id]:-BB_BR:0}"
+        shot_target_type="${shot_info%%:*}"
+        shot_last_mtime="${shot_info##*:}"
+        unset "shot_targets[$target_id]"
+        rm -f "$result_file"
+
+        if [[ -n "${current_targets[$target_id]:-}" ]]; then
+            refresh_spro_track_from_current "$target_id"
+        fi
+
+        if [[ "$result" == "ALREADY_DESTROYED" ]] || is_target_destroyed "$target_id"; then
+            drop_spro_target "$target_id"
+            continue
+        fi
+
+        if [[ "$result" == "MISS" ]]; then
+            latest_mtime=$(resolve_spro_retry_mtime "$target_id" "${shot_last_mtime:-0}")
+            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime"; then
+                reported_targets[$target_id]=1
+                unset "pending_fire_targets[$target_id]"
+                unset "target_retry_deadlines[$target_id]"
+            elif is_target_destroyed "$target_id"; then
+                drop_spro_target "$target_id"
+            else
+                hold_spro_target_for_retry "$target_id" "$shot_target_type"
+            fi
+            continue
+        fi
+
+        drop_spro_target "$target_id"
+    done
+}
+
 while true; do
     # Heartbeat
     if [[ -f "$MSG_DIR/heartbeat/${SPRO_NAME}_request" ]]; then
@@ -267,6 +307,10 @@ while true; do
             echo "[$SPRO_NAME] Автопополнение боекомплекта: $AMMO"
         fi
     fi
+
+    # Сначала обрабатываем уже готовые результаты выстрелов, чтобы не ждать
+    # полного сканирования каталога целей перед повторным пуском после промаха.
+    process_spro_shot_results
 
     # Сканирование целей
     declare -A current_targets
@@ -327,43 +371,9 @@ while true; do
         fi
     done
 
-    # Сначала разбираем результаты уже выполненных выстрелов, чтобы при промахе
-    # успеть выпустить повторную противоракету в этом же цикле.
-    for result_file in "$TEMP_DIR/shot_results/${SPRO_NAME}_"*; do
-        [[ -f "$result_file" ]] || continue
-        target_id="${result_file##${TEMP_DIR}/shot_results/${SPRO_NAME}_}"
-        result=$(cat "$result_file" 2>/dev/null)
-        shot_info="${shot_targets[$target_id]:-BB_BR:0}"
-        shot_target_type="${shot_info%%:*}"
-        shot_last_mtime="${shot_info##*:}"
-        unset "shot_targets[$target_id]"
-        rm -f "$result_file"
-
-        if [[ -n "${current_targets[$target_id]}" ]]; then
-            refresh_spro_track_from_current "$target_id"
-        fi
-
-        if [[ "$result" == "ALREADY_DESTROYED" ]] || is_target_destroyed "$target_id"; then
-            drop_spro_target "$target_id"
-            continue
-        fi
-
-        if [[ "$result" == "MISS" ]]; then
-            latest_mtime=$(resolve_spro_retry_mtime "$target_id" "${shot_last_mtime:-0}")
-            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime"; then
-                reported_targets[$target_id]=1
-                unset "pending_fire_targets[$target_id]"
-                unset "target_retry_deadlines[$target_id]"
-            elif is_target_destroyed "$target_id"; then
-                drop_spro_target "$target_id"
-            else
-                hold_spro_target_for_retry "$target_id" "$shot_target_type"
-            fi
-            continue
-        fi
-
-        drop_spro_target "$target_id"
-    done
+    # Обрабатываем результаты ещё раз после обновления текущих отметок, чтобы
+    # использовать самую новую видимую засечку, если она уже успела появиться.
+    process_spro_shot_results
 
     try_pending_spro_targets
 

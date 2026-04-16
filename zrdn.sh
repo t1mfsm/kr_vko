@@ -247,6 +247,47 @@ try_pending_zrdn_targets() {
     done
 }
 
+process_zrdn_shot_results() {
+    local result_file target_id result shot_info shot_target_type shot_last_mtime target_type latest_mtime
+
+    for result_file in "$TEMP_DIR/shot_results/${ZRDN_NAME}_"*; do
+        [[ -f "$result_file" ]] || continue
+        target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
+        result=$(cat "$result_file" 2>/dev/null)
+        shot_info="${shot_targets[$target_id]:-:0}"
+        shot_target_type="${shot_info%%:*}"
+        shot_last_mtime="${shot_info##*:}"
+        unset "shot_targets[$target_id]"
+        rm -f "$result_file"
+
+        if [[ -n "${current_targets[$target_id]:-}" ]]; then
+            refresh_zrdn_track_from_current "$target_id"
+        fi
+
+        if [[ "$result" == "ALREADY_DESTROYED" ]] || is_target_destroyed "$target_id"; then
+            drop_zrdn_target "$target_id"
+            continue
+        fi
+
+        if [[ "$result" == "MISS" ]]; then
+            target_type="$shot_target_type"
+            latest_mtime=$(resolve_zrdn_retry_mtime "$target_id" "${shot_last_mtime:-0}")
+            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
+                reported_targets[$target_id]=1
+                unset "pending_fire_targets[$target_id]"
+                unset "target_retry_deadlines[$target_id]"
+            elif is_target_destroyed "$target_id"; then
+                drop_zrdn_target "$target_id"
+            else
+                hold_zrdn_target_for_retry "$target_id" "$target_type"
+            fi
+            continue
+        fi
+
+        drop_zrdn_target "$target_id"
+    done
+}
+
 while true; do
     # Heartbeat
     if [[ -f "$MSG_DIR/heartbeat/${ZRDN_NAME}_request" ]]; then
@@ -282,6 +323,10 @@ while true; do
             echo "[$ZRDN_NAME] Автопополнение боекомплекта: $AMMO"
         fi
     fi
+
+    # Сначала обрабатываем готовые результаты выстрелов, чтобы повторный пуск
+    # после промаха не ждал полного сканирования целей.
+    process_zrdn_shot_results
 
     # Сканирование целей
     declare -A current_targets
@@ -340,44 +385,9 @@ while true; do
         fi
     done
 
-    # Сначала разбираем результаты уже выполненных выстрелов, чтобы при промахе
-    # успеть выпустить повторную ракету в этом же цикле.
-    for result_file in "$TEMP_DIR/shot_results/${ZRDN_NAME}_"*; do
-        [[ -f "$result_file" ]] || continue
-        target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
-        result=$(cat "$result_file" 2>/dev/null)
-        shot_info="${shot_targets[$target_id]:-:0}"
-        shot_target_type="${shot_info%%:*}"
-        shot_last_mtime="${shot_info##*:}"
-        unset "shot_targets[$target_id]"
-        rm -f "$result_file"
-
-        if [[ -n "${current_targets[$target_id]}" ]]; then
-            refresh_zrdn_track_from_current "$target_id"
-        fi
-
-        if [[ "$result" == "ALREADY_DESTROYED" ]] || is_target_destroyed "$target_id"; then
-            drop_zrdn_target "$target_id"
-            continue
-        fi
-
-        if [[ "$result" == "MISS" ]]; then
-            target_type="$shot_target_type"
-            latest_mtime=$(resolve_zrdn_retry_mtime "$target_id" "${shot_last_mtime:-0}")
-            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
-                reported_targets[$target_id]=1
-                unset "pending_fire_targets[$target_id]"
-                unset "target_retry_deadlines[$target_id]"
-            elif is_target_destroyed "$target_id"; then
-                drop_zrdn_target "$target_id"
-            else
-                hold_zrdn_target_for_retry "$target_id" "$target_type"
-            fi
-            continue
-        fi
-
-        drop_zrdn_target "$target_id"
-    done
+    # И повторяем после обновления текущих отметок, чтобы при наличии новой
+    # засечки использовать именно её.
+    process_zrdn_shot_results
 
     try_pending_zrdn_targets
 
