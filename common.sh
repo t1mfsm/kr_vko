@@ -414,28 +414,13 @@ track_shot_result_async() {
     mkdir -p "$result_dir"
 
     (
-        local start_ms deadline_ms now_ms latest_mtime latest_fresh_mtime result_line log_wait_seconds
-        local first_post_shot_mtime=0 confirm_deadline_ms=0 result="" destroyed_by=""
+        local start_ms deadline_ms now_ms latest_mtime result="" destroyed_by=""
 
         start_ms=$(current_time_ms)
         deadline_ms=$((start_ms + SHOT_RESULT_MAX_WAIT * 1000))
 
         if (( SHOT_RESULT_DELAY > 0 )); then
             sleep "$SHOT_RESULT_DELAY"
-        fi
-
-        log_wait_seconds=$((SHOT_RESULT_MAX_WAIT - SHOT_RESULT_DELAY))
-        if (( log_wait_seconds < 1 )); then
-            log_wait_seconds=1
-        fi
-
-        result_line=$(wait_for_generator_result "$target_id" "$system_name" "$generator_log_start" "$log_wait_seconds" 2>/dev/null || true)
-        if [[ -n "$result_line" ]]; then
-            if [[ "$result_line" == *"Промах"* ]]; then
-                result="MISS"
-            elif [[ "$result_line" == *"Уничтожена"* ]]; then
-                result="DESTROYED"
-            fi
         fi
 
         while [[ -z "$result" ]]; do
@@ -446,27 +431,20 @@ track_shot_result_async() {
             fi
 
             latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
-            latest_fresh_mtime=$(get_latest_fresh_target_mtime "$target_id" 2>/dev/null || echo 0)
             now_ms=$(current_time_ms)
 
-            if (( first_post_shot_mtime == 0 )); then
-                if (( latest_mtime > observed_mtime )); then
-                    first_post_shot_mtime=$latest_mtime
-                    confirm_deadline_ms=$((now_ms + SHOT_RESULT_CONFIRM_DELAY * 1000))
-                elif (( latest_fresh_mtime == 0 )); then
-                    result="DESTROYED"
-                    break
-                fi
-            else
-                if (( latest_mtime > first_post_shot_mtime )); then
-                    result="MISS"
-                    break
-                fi
+            # По ТЗ новая отметка после выстрела означает, что цель продолжает
+            # генерироваться, следовательно, пуск был неуспешен.
+            if (( latest_mtime > observed_mtime )); then
+                result="MISS"
+                break
+            fi
 
-                if (( latest_fresh_mtime == 0 )) || (( now_ms >= confirm_deadline_ms )); then
-                    result="DESTROYED"
-                    break
-                fi
+            # Если за окно подтверждения новой отметки не появилось, считаем
+            # цель уничтоженной.
+            if (( now_ms - start_ms >= SHOT_RESULT_DESTROY_CONFIRM_MS )); then
+                result="DESTROYED"
+                break
             fi
 
             if (( now_ms >= deadline_ms )); then
@@ -573,6 +551,41 @@ get_latest_two_visible_marks() {
     fi
 
     echo "$prev_coords $prev_time $latest_coords $latest_time"
+}
+
+# --- Получение последней видимой отметки цели ---
+# Возвращает: x y mtime
+get_latest_visible_mark() {
+    local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
+    local latest_file="" latest_time=0
+    local f decoded_id ftime coords tx ty
+
+    for f in "$TARGETS_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        decoded_id=$(decode_target_id "$f")
+        [[ "$decoded_id" != "$target_id" ]] && continue
+
+        coords=$(read_target_coords "$f")
+        [[ -z "$coords" ]] && continue
+        read -r tx ty <<< "$coords"
+
+        if [[ "$mode" == "sector" ]]; then
+            is_in_sector "$cx" "$cy" "$range" "$angle" "$sector" "$tx" "$ty" || continue
+        else
+            is_in_range "$cx" "$cy" "$range" "$tx" "$ty" || continue
+        fi
+
+        ftime=$(get_file_mtime "$f")
+        if (( ftime > latest_time )); then
+            latest_time=$ftime
+            latest_file="$f"
+        fi
+    done
+
+    [[ -n "$latest_file" ]] || return 1
+    coords=$(read_target_coords "$latest_file")
+    [[ -n "$coords" ]] || return 1
+    echo "$coords $latest_time"
 }
 
 # --- Вставка записи в БД ---
