@@ -474,6 +474,7 @@ track_shot_result_async() {
 
     (
         local start_ms deadline_ms now_ms latest_mtime generator_result result="" destroyed_by=""
+        local miss_candidate_since_ms=0
 
         start_ms=$(current_time_ms)
         deadline_ms=$((start_ms + SHOT_RESULT_MAX_WAIT * 1000))
@@ -498,11 +499,18 @@ track_shot_result_async() {
             latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
             now_ms=$(current_time_ms)
 
-            # Новая отметка после выстрела означает, что цель продолжает
-            # генерироваться, следовательно, пуск был неуспешен.
+            # Новая отметка после выстрела - признак возможного промаха,
+            # но окончательно считаем MISS только если генератор за короткое
+            # окно не подтвердил уничтожение.
             if (( latest_mtime > observed_mtime )); then
-                result="MISS"
-                break
+                if (( miss_candidate_since_ms == 0 )); then
+                    miss_candidate_since_ms=$now_ms
+                elif (( now_ms - miss_candidate_since_ms >= 1000 )); then
+                    result="MISS"
+                    break
+                fi
+            else
+                miss_candidate_since_ms=0
             fi
 
             if (( now_ms >= deadline_ms )); then
