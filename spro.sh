@@ -32,6 +32,8 @@ declare -A tracked_last_mtime
 declare -A tracked_vx
 declare -A tracked_vy
 declare -A tracked_last_seen_at
+declare -A current_targets
+declare -A current_target_mtimes
 
 clear_spro_track() {
     local target_id="$1"
@@ -313,8 +315,8 @@ while true; do
     process_spro_shot_results
 
     # Сканирование целей
-    declare -A current_targets
-    declare -A current_target_mtimes
+    current_targets=()
+    current_target_mtimes=()
 
     while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
@@ -395,8 +397,5 @@ while true; do
             drop_spro_target "$target_id"
         fi
     done
-
-    unset current_targets
-
     sleep "$CHECK_INTERVAL"
 done
