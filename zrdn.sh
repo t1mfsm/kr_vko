@@ -37,7 +37,7 @@ send_to_kp "$ZRDN_NAME" "STATUS $ZRDN_NAME ONLINE AMMO:$AMMO"
 
 # Ассоциативные массивы
 declare -A reported_targets   # ID -> 1
-declare -A shot_targets       # ID -> target_type
+declare -A shot_targets       # ID -> target_type:last_mtime
 declare -A pending_fire_targets  # ID -> target_type
 declare -A target_retry_deadlines # ID -> epoch seconds
 declare -A tracked_target_types
@@ -189,7 +189,7 @@ fire_zrdn_target() {
     generator_log_start=$(get_generator_log_position)
     echo "$ZRDN_NAME" > "$DESTROY_DIR/$target_id"
     ((AMMO--))
-    shot_targets[$target_id]="$target_type"
+    shot_targets[$target_id]="$target_type:$latest_mtime"
     track_shot_result_async "$ZRDN_NAME" "$LOGFILE" "$target_id" "$target_type" "$latest_mtime" "$generator_log_start"
 
     shot_msg="Стрельба по цели id:$target_id тип:$target_type. Осталось ракет: $AMMO"
@@ -334,7 +334,9 @@ while true; do
         [[ -f "$result_file" ]] || continue
         target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
         result=$(cat "$result_file" 2>/dev/null)
-        shot_target_type="${shot_targets[$target_id]:-}"
+        shot_info="${shot_targets[$target_id]:-:0}"
+        shot_target_type="${shot_info%%:*}"
+        shot_last_mtime="${shot_info##*:}"
         unset "shot_targets[$target_id]"
         rm -f "$result_file"
 
@@ -349,7 +351,7 @@ while true; do
 
         if [[ "$result" == "MISS" ]]; then
             target_type="$shot_target_type"
-            latest_mtime=$(get_zrdn_retry_mtime "$target_id" 2>/dev/null || echo 0)
+            latest_mtime=$(get_zrdn_retry_mtime "$target_id" 2>/dev/null || echo "${shot_last_mtime:-0}")
             if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_zrdn_target "$target_id" "$target_type" "$latest_mtime"; then
                 reported_targets[$target_id]=1
                 unset "pending_fire_targets[$target_id]"
