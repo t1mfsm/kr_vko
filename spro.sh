@@ -197,6 +197,8 @@ fire_spro_target() {
             if ! claim_target_engagement "$target_id" "$SPRO_NAME"; then
                 return 1
             fi
+        else
+            refresh_target_engagement "$target_id" "$SPRO_NAME" 2>/dev/null || true
         fi
     else
         if ! claim_target_engagement "$target_id" "$SPRO_NAME"; then

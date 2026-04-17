@@ -212,6 +212,8 @@ fire_zrdn_target() {
             if ! claim_target_engagement "$target_id" "$ZRDN_NAME"; then
                 return 1
             fi
+        else
+            refresh_target_engagement "$target_id" "$ZRDN_NAME" 2>/dev/null || true
         fi
     else
         if ! claim_target_engagement "$target_id" "$ZRDN_NAME"; then

@@ -76,6 +76,26 @@ get_engagement_owner() {
     cat "$lock_dir/owner" 2>/dev/null
 }
 
+get_engagement_pid() {
+    local target_id="$1"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    [[ -f "$lock_dir/pid" ]] || return 1
+    cat "$lock_dir/pid" 2>/dev/null
+}
+
+refresh_target_engagement() {
+    local target_id="$1" system_name="$2"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    local owner
+
+    [[ -d "$lock_dir" ]] || return 1
+    owner=$(get_engagement_owner "$target_id" 2>/dev/null || true)
+    [[ "$owner" == "$system_name" ]] || return 1
+
+    printf "%s\n" "$$" > "$lock_dir/pid"
+    touch "$lock_dir" 2>/dev/null || true
+}
+
 release_target_engagement() {
     local target_id="$1" system_name="${2:-}"
     local lock_dir="$ENGAGEMENT_DIR/$target_id"
@@ -93,19 +113,25 @@ release_target_engagement() {
 claim_target_engagement() {
     local target_id="$1" system_name="$2"
     local lock_dir="$ENGAGEMENT_DIR/$target_id"
-    local owner now_s lock_age
+    local owner owner_pid now_s lock_age
 
     mkdir -p "$ENGAGEMENT_DIR"
 
     if mkdir "$lock_dir" 2>/dev/null; then
         printf "%s\n" "$system_name" > "$lock_dir/owner"
+        printf "%s\n" "$$" > "$lock_dir/pid"
         return 0
     fi
 
     owner=$(get_engagement_owner "$target_id" 2>/dev/null || true)
     if [[ "$owner" == "$system_name" ]]; then
-        touch "$lock_dir" 2>/dev/null || true
+        refresh_target_engagement "$target_id" "$system_name"
         return 0
+    fi
+
+    owner_pid=$(get_engagement_pid "$target_id" 2>/dev/null || true)
+    if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
+        return 1
     fi
 
     now_s=$(date +%s)
@@ -114,6 +140,7 @@ claim_target_engagement() {
         rm -rf "$lock_dir"
         if mkdir "$lock_dir" 2>/dev/null; then
             printf "%s\n" "$system_name" > "$lock_dir/owner"
+            printf "%s\n" "$$" > "$lock_dir/pid"
             return 0
         fi
     fi
