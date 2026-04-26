@@ -35,6 +35,8 @@ declare -A shot_seen_after
 declare -A shot_seen_x
 declare -A shot_seen_y
 declare -A last_seen_epoch
+declare -A last_x
+declare -A last_y
 
 cleanup_stale_targets() {
     local now_epoch="$1" target_id last
@@ -55,6 +57,8 @@ cleanup_stale_targets() {
             unset "shot_seen_after[$target_id]"
             unset "shot_seen_x[$target_id]"
             unset "shot_seen_y[$target_id]"
+            unset "last_x[$target_id]"
+            unset "last_y[$target_id]"
         fi
     done
 }
@@ -143,6 +147,8 @@ while true; do
         [[ -n "$target_id" ]] || continue
         present_now[$target_id]=1
         last_seen_epoch[$target_id]="$now_epoch"
+        last_x[$target_id]="$tx"
+        last_y[$target_id]="$ty"
 
         if [[ "${shot_pending[$target_id]:-0}" -eq 1 ]]; then
             generator_result=$(get_generator_result_since "${shot_generator_log_start[$target_id]:-0}" "$target_id" "$SPRO_NAME" 2>/dev/null || true)
@@ -225,6 +231,9 @@ while true; do
                 echo "[$SPRO_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
                 shot_pending[$target_id]=0
                 shot_seen_after[$target_id]=0
+                if (( AMMO > 0 )) && [[ -n "${last_x[$target_id]:-}" && -n "${last_y[$target_id]:-}" ]]; then
+                    fire_target "$target_id" "${last_x[$target_id]}" "${last_y[$target_id]}"
+                fi
                 continue
             fi
             mark_target_destroyed "$target_id" "$SPRO_NAME"
