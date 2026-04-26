@@ -45,6 +45,7 @@ declare -A shot_no
 declare -A shot_x
 declare -A shot_y
 declare -A shot_started_at
+declare -A shot_generator_log_start
 declare -A shot_seen_after
 declare -A shot_seen_x
 declare -A shot_seen_y
@@ -78,6 +79,7 @@ drop_zrdn_target() {
     unset "shot_x[$target_id]"
     unset "shot_y[$target_id]"
     unset "shot_started_at[$target_id]"
+    unset "shot_generator_log_start[$target_id]"
     unset "shot_seen_after[$target_id]"
     unset "shot_seen_x[$target_id]"
     unset "shot_seen_y[$target_id]"
@@ -217,7 +219,7 @@ get_zrdn_hot_retry_mtime() {
 
 fire_zrdn_target() {
     local target_id="$1" target_type="$2" latest_mtime="$3" retry_owner="${4:-0}"
-    local shot_msg empty_msg tx ty
+    local shot_msg empty_msg tx ty generator_log_start
 
     if is_target_destroyed "$target_id"; then
         return 1
@@ -241,6 +243,7 @@ fire_zrdn_target() {
         fi
     fi
 
+    generator_log_start=$(get_generator_log_position)
     echo "$ZRDN_NAME" > "$DESTROY_DIR/$target_id"
     ((AMMO--))
     shot_no[$target_id]=$(( ${shot_no[$target_id]:-0} + 1 ))
@@ -250,6 +253,7 @@ fire_zrdn_target() {
     shot_x[$target_id]="$tx"
     shot_y[$target_id]="$ty"
     shot_started_at[$target_id]=$(current_time_ms)
+    shot_generator_log_start[$target_id]="$generator_log_start"
     shot_seen_after[$target_id]=0
     unset "shot_seen_x[$target_id]"
     unset "shot_seen_y[$target_id]"
@@ -298,7 +302,7 @@ try_pending_zrdn_targets() {
 }
 
 process_zrdn_shot_results() {
-    local target_id shot_info shot_target_type shot_last_mtime latest_mtime tx ty now_ms elapsed result_msg
+    local target_id shot_info shot_target_type shot_last_mtime latest_mtime tx ty now_ms elapsed result_msg generator_result
 
     for target_id in "${!shot_targets[@]}"; do
         shot_info="${shot_targets[$target_id]:-:0}"
@@ -310,7 +314,42 @@ process_zrdn_shot_results() {
             continue
         fi
 
+        generator_result=$(get_generator_result_since "${shot_generator_log_start[$target_id]:-0}" "$target_id" "$ZRDN_NAME" 2>/dev/null || true)
+        if [[ "$generator_result" == "DESTROYED" ]]; then
+            mark_target_destroyed "$target_id" "$ZRDN_NAME"
+            result_msg="Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
+            log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
+            send_to_kp "$ZRDN_NAME" "DESTROYED $target_id $shot_target_type"
+            echo "[$ZRDN_NAME] $result_msg"
+            ignore_zrdn_target "$target_id"
+            continue
+        fi
+
+        if [[ "$generator_result" == "MISS" ]]; then
+            result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+            log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
+            send_to_kp "$ZRDN_NAME" "MISS $target_id $shot_target_type"
+            echo "[$ZRDN_NAME] $result_msg"
+            unset "shot_targets[$target_id]"
+            unset "shot_seen_after[$target_id]"
+            latest_mtime=$(get_zrdn_retry_mtime "$target_id" 2>/dev/null || echo 0)
+            if (( AMMO > 0 )) && [[ "$shot_target_type" != "BB_BR" ]] && (( latest_mtime > 0 )); then
+                fire_zrdn_target "$target_id" "$shot_target_type" "$latest_mtime" 1
+            fi
+            continue
+        fi
+
         if [[ -z "${current_targets[$target_id]:-}" ]]; then
+            if get_latest_fresh_target_mtime "$target_id" >/dev/null 2>&1; then
+                result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
+                send_to_kp "$ZRDN_NAME" "MISS $target_id $shot_target_type"
+                echo "[$ZRDN_NAME] $result_msg"
+                unset "shot_targets[$target_id]"
+                unset "shot_seen_after[$target_id]"
+                release_target_engagement "$target_id" "$ZRDN_NAME" 2>/dev/null || true
+                continue
+            fi
             mark_target_destroyed "$target_id" "$ZRDN_NAME"
             result_msg="Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
             log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
@@ -335,9 +374,9 @@ process_zrdn_shot_results() {
                 log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
                 send_to_kp "$ZRDN_NAME" "MISS $target_id $shot_target_type"
                 echo "[$ZRDN_NAME] $result_msg"
-                unset "shot_targets[$target_id]"
-                unset "shot_seen_after[$target_id]"
-                latest_mtime=$(get_zrdn_hot_retry_mtime "$target_id" "${shot_last_mtime:-0}")
+            unset "shot_targets[$target_id]"
+            unset "shot_seen_after[$target_id]"
+            latest_mtime=$(get_zrdn_retry_mtime "$target_id" 2>/dev/null || echo 0)
                 if (( AMMO > 0 )) && [[ "$shot_target_type" != "BB_BR" ]] && (( latest_mtime > 0 )); then
                     fire_zrdn_target "$target_id" "$shot_target_type" "$latest_mtime" 1
                 fi
@@ -353,7 +392,7 @@ process_zrdn_shot_results() {
             send_to_kp "$ZRDN_NAME" "MISS $target_id $shot_target_type"
             echo "[$ZRDN_NAME] $result_msg"
             unset "shot_targets[$target_id]"
-            latest_mtime=$(get_zrdn_hot_retry_mtime "$target_id" "${shot_last_mtime:-0}")
+            latest_mtime=$(get_zrdn_retry_mtime "$target_id" 2>/dev/null || echo 0)
             if (( AMMO > 0 )) && [[ "$shot_target_type" != "BB_BR" ]] && (( latest_mtime > 0 )); then
                 fire_zrdn_target "$target_id" "$shot_target_type" "$latest_mtime" 1
             fi
