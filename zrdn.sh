@@ -44,6 +44,7 @@ declare -A shot_pending
 declare -A shot_no
 declare -A shot_x
 declare -A shot_y
+declare -A shot_generator_log_start
 declare -A shot_seen_after
 declare -A shot_seen_x
 declare -A shot_seen_y
@@ -64,6 +65,7 @@ cleanup_stale_targets() {
             unset "shot_no[$target_id]"
             unset "shot_x[$target_id]"
             unset "shot_y[$target_id]"
+            unset "shot_generator_log_start[$target_id]"
             unset "shot_seen_after[$target_id]"
             unset "shot_seen_x[$target_id]"
             unset "shot_seen_y[$target_id]"
@@ -82,11 +84,12 @@ send_detect() {
 
 fire_target() {
     local target_id="$1" target_type="$2" tx="$3" ty="$4"
-    local shot_msg empty_msg
+    local shot_msg empty_msg generator_log_start
 
     (( AMMO > 0 )) || return 1
 
     mkdir -p "$DESTROY_DIR"
+    generator_log_start=$(get_generator_log_position)
     printf '%s\n' "$ZRDN_NAME" > "$DESTROY_DIR/$target_id"
 
     shot_no[$target_id]=$(( ${shot_no[$target_id]:-0} + 1 ))
@@ -99,6 +102,7 @@ fire_target() {
     shot_pending[$target_id]=1
     shot_x[$target_id]="$tx"
     shot_y[$target_id]="$ty"
+    shot_generator_log_start[$target_id]="$generator_log_start"
     shot_seen_after[$target_id]=0
     shot_seen_x[$target_id]="$tx"
     shot_seen_y[$target_id]="$ty"
@@ -155,20 +159,38 @@ while true; do
         last_seen_epoch[$target_id]="$now_epoch"
 
         if [[ "${shot_pending[$target_id]:-0}" -eq 1 ]]; then
-            if [[ "$tx" != "${shot_x[$target_id]:-}" || "$ty" != "${shot_y[$target_id]:-}" ]]; then
-                if [[ "${shot_seen_after[$target_id]:-0}" -eq 0 ]]; then
-                    shot_seen_after[$target_id]=1
-                    shot_seen_x[$target_id]="$tx"
-                    shot_seen_y[$target_id]="$ty"
-                elif [[ "$tx" != "${shot_seen_x[$target_id]:-}" || "$ty" != "${shot_seen_y[$target_id]:-}" ]]; then
-                    log_message "$LOGFILE" "$ZRDN_NAME" "ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
-                    send_to_kp "$ZRDN_NAME" "MISS $target_id ${target_type[$target_id]:-UNKNOWN}"
-                    echo "[$ZRDN_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
-                    shot_pending[$target_id]=0
-                    shot_seen_after[$target_id]=0
+            generator_result=$(get_generator_result_since "${shot_generator_log_start[$target_id]:-0}" "$target_id" "$ZRDN_NAME" 2>/dev/null || true)
+            if [[ "$generator_result" == "DESTROYED" ]]; then
+                mark_target_destroyed "$target_id" "$ZRDN_NAME"
+                log_message "$LOGFILE" "$ZRDN_NAME" "Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
+                send_to_kp "$ZRDN_NAME" "DESTROYED $target_id ${target_type[$target_id]:-UNKNOWN}"
+                echo "[$ZRDN_NAME] Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
+                shot_pending[$target_id]=0
+                shot_seen_after[$target_id]=0
+                ignore_target[$target_id]=1
+                continue
+            elif [[ "$generator_result" == "MISS" ]]; then
+                log_message "$LOGFILE" "$ZRDN_NAME" "ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                send_to_kp "$ZRDN_NAME" "MISS $target_id ${target_type[$target_id]:-UNKNOWN}"
+                echo "[$ZRDN_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                shot_pending[$target_id]=0
+                shot_seen_after[$target_id]=0
+            else
+                if [[ "$tx" != "${shot_x[$target_id]:-}" || "$ty" != "${shot_y[$target_id]:-}" ]]; then
+                    if [[ "${shot_seen_after[$target_id]:-0}" -eq 0 ]]; then
+                        shot_seen_after[$target_id]=1
+                        shot_seen_x[$target_id]="$tx"
+                        shot_seen_y[$target_id]="$ty"
+                    elif [[ "$tx" != "${shot_seen_x[$target_id]:-}" || "$ty" != "${shot_seen_y[$target_id]:-}" ]]; then
+                        log_message "$LOGFILE" "$ZRDN_NAME" "ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                        send_to_kp "$ZRDN_NAME" "MISS $target_id ${target_type[$target_id]:-UNKNOWN}"
+                        echo "[$ZRDN_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                        shot_pending[$target_id]=0
+                        shot_seen_after[$target_id]=0
+                    fi
                 fi
+                continue
             fi
-            continue
         fi
 
         if [[ "$target_id" =~ b$ ]]; then
@@ -210,6 +232,15 @@ while true; do
     for target_id in "${!shot_pending[@]}"; do
         [[ "${shot_pending[$target_id]}" -eq 1 ]] || continue
         if [[ -z "${present_now[$target_id]:-}" ]]; then
+            generator_result=$(get_generator_result_since "${shot_generator_log_start[$target_id]:-0}" "$target_id" "$ZRDN_NAME" 2>/dev/null || true)
+            if [[ "$generator_result" == "MISS" ]]; then
+                log_message "$LOGFILE" "$ZRDN_NAME" "ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                send_to_kp "$ZRDN_NAME" "MISS $target_id ${target_type[$target_id]:-UNKNOWN}"
+                echo "[$ZRDN_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                shot_pending[$target_id]=0
+                shot_seen_after[$target_id]=0
+                continue
+            fi
             mark_target_destroyed "$target_id" "$ZRDN_NAME"
             log_message "$LOGFILE" "$ZRDN_NAME" "Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
             send_to_kp "$ZRDN_NAME" "DESTROYED $target_id ${target_type[$target_id]:-UNKNOWN}"
