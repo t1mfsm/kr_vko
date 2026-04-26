@@ -40,6 +40,14 @@ declare -A reported_targets   # ID -> 1
 declare -A shot_targets       # ID -> target_type:last_mtime
 declare -A pending_fire_targets  # ID -> target_type
 declare -A target_retry_deadlines # ID -> epoch seconds
+declare -A ignored_targets
+declare -A shot_no
+declare -A shot_x
+declare -A shot_y
+declare -A shot_started_at
+declare -A shot_seen_after
+declare -A shot_seen_x
+declare -A shot_seen_y
 declare -A tracked_target_types
 declare -A tracked_last_x
 declare -A tracked_last_y
@@ -67,8 +75,20 @@ drop_zrdn_target() {
     unset "target_retry_deadlines[$target_id]"
     unset "reported_targets[$target_id]"
     unset "shot_targets[$target_id]"
+    unset "shot_x[$target_id]"
+    unset "shot_y[$target_id]"
+    unset "shot_started_at[$target_id]"
+    unset "shot_seen_after[$target_id]"
+    unset "shot_seen_x[$target_id]"
+    unset "shot_seen_y[$target_id]"
     release_target_engagement "$target_id" "$ZRDN_NAME" 2>/dev/null || true
     clear_zrdn_track "$target_id"
+}
+
+ignore_zrdn_target() {
+    local target_id="$1"
+    ignored_targets[$target_id]=1
+    drop_zrdn_target "$target_id"
 }
 
 update_zrdn_track_from_marks() {
@@ -197,7 +217,7 @@ get_zrdn_hot_retry_mtime() {
 
 fire_zrdn_target() {
     local target_id="$1" target_type="$2" latest_mtime="$3" retry_owner="${4:-0}"
-    local shot_msg empty_msg generator_log_start
+    local shot_msg empty_msg tx ty
 
     if is_target_destroyed "$target_id"; then
         return 1
@@ -221,13 +241,20 @@ fire_zrdn_target() {
         fi
     fi
 
-    generator_log_start=$(get_generator_log_position)
     echo "$ZRDN_NAME" > "$DESTROY_DIR/$target_id"
     ((AMMO--))
+    shot_no[$target_id]=$(( ${shot_no[$target_id]:-0} + 1 ))
     shot_targets[$target_id]="$target_type:$latest_mtime"
-    track_shot_result_async "$ZRDN_NAME" "$LOGFILE" "$target_id" "$target_type" "$latest_mtime" "$generator_log_start"
+    tx="${tracked_last_x[$target_id]:-0}"
+    ty="${tracked_last_y[$target_id]:-0}"
+    shot_x[$target_id]="$tx"
+    shot_y[$target_id]="$ty"
+    shot_started_at[$target_id]=$(current_time_ms)
+    shot_seen_after[$target_id]=0
+    unset "shot_seen_x[$target_id]"
+    unset "shot_seen_y[$target_id]"
 
-    shot_msg="Стрельба по цели id:$target_id тип:$target_type. Осталось ракет: $AMMO"
+    shot_msg="Стрельба по цели id:$target_id тип:$target_type пуск №${shot_no[$target_id]}. Осталось ракет: $AMMO"
     log_message "$LOGFILE" "$ZRDN_NAME" "$shot_msg"
     send_to_kp "$ZRDN_NAME" "SHOT $target_id $target_type AMMO:$AMMO"
     echo "[$ZRDN_NAME] $shot_msg"
@@ -271,43 +298,66 @@ try_pending_zrdn_targets() {
 }
 
 process_zrdn_shot_results() {
-    local result_file target_id result shot_info shot_target_type shot_last_mtime target_type latest_mtime
+    local target_id shot_info shot_target_type shot_last_mtime latest_mtime tx ty now_ms elapsed result_msg
 
-    for result_file in "$TEMP_DIR/shot_results/${ZRDN_NAME}_"*; do
-        [[ -f "$result_file" ]] || continue
-        target_id="${result_file##${TEMP_DIR}/shot_results/${ZRDN_NAME}_}"
-        result=$(cat "$result_file" 2>/dev/null)
+    for target_id in "${!shot_targets[@]}"; do
         shot_info="${shot_targets[$target_id]:-:0}"
         shot_target_type="${shot_info%%:*}"
         shot_last_mtime="${shot_info##*:}"
-        unset "shot_targets[$target_id]"
-        rm -f "$result_file"
 
-        if [[ -n "${current_targets[$target_id]:-}" ]]; then
-            refresh_zrdn_track_from_current "$target_id"
-        fi
-
-        if [[ "$result" == "ALREADY_DESTROYED" ]] || is_target_destroyed "$target_id"; then
-            drop_zrdn_target "$target_id"
+        if is_target_destroyed "$target_id"; then
+            ignore_zrdn_target "$target_id"
             continue
         fi
 
-        if [[ "$result" == "MISS" ]]; then
-            target_type="$shot_target_type"
-            latest_mtime=$(get_zrdn_hot_retry_mtime "$target_id" "${shot_last_mtime:-0}")
-            if ! is_target_destroyed "$target_id" && (( latest_mtime > 0 )) && fire_zrdn_target "$target_id" "$target_type" "$latest_mtime" 1; then
-                reported_targets[$target_id]=1
-                unset "pending_fire_targets[$target_id]"
-                unset "target_retry_deadlines[$target_id]"
-            elif is_target_destroyed "$target_id"; then
-                drop_zrdn_target "$target_id"
-            else
-                hold_zrdn_target_for_retry "$target_id" "$target_type"
+        if [[ -z "${current_targets[$target_id]:-}" ]]; then
+            mark_target_destroyed "$target_id" "$ZRDN_NAME"
+            result_msg="Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
+            log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
+            send_to_kp "$ZRDN_NAME" "DESTROYED $target_id $shot_target_type"
+            echo "[$ZRDN_NAME] $result_msg"
+            ignore_zrdn_target "$target_id"
+            continue
+        fi
+
+        refresh_zrdn_track_from_current "$target_id"
+        read -r tx ty <<< "${current_targets[$target_id]}"
+        if [[ "$tx" != "${shot_x[$target_id]:-}" || "$ty" != "${shot_y[$target_id]:-}" ]]; then
+            if [[ "${shot_seen_after[$target_id]:-0}" -eq 0 ]]; then
+                shot_seen_after[$target_id]=1
+                shot_seen_x[$target_id]="$tx"
+                shot_seen_y[$target_id]="$ty"
+                continue
             fi
-            continue
+
+            if [[ "$tx" != "${shot_seen_x[$target_id]:-}" || "$ty" != "${shot_seen_y[$target_id]:-}" ]]; then
+                result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
+                send_to_kp "$ZRDN_NAME" "MISS $target_id $shot_target_type"
+                echo "[$ZRDN_NAME] $result_msg"
+                unset "shot_targets[$target_id]"
+                unset "shot_seen_after[$target_id]"
+                latest_mtime=$(get_zrdn_hot_retry_mtime "$target_id" "${shot_last_mtime:-0}")
+                if (( AMMO > 0 )) && [[ "$shot_target_type" != "BB_BR" ]] && (( latest_mtime > 0 )); then
+                    fire_zrdn_target "$target_id" "$shot_target_type" "$latest_mtime" 1
+                fi
+                continue
+            fi
         fi
 
-        drop_zrdn_target "$target_id"
+        now_ms=$(current_time_ms)
+        elapsed=$(( now_ms - ${shot_started_at[$target_id]:-$now_ms} ))
+        if (( elapsed >= SHOT_RESULT_FAILSAFE_WAIT * 1000 )); then
+            result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+            log_message "$LOGFILE" "$ZRDN_NAME" "$result_msg"
+            send_to_kp "$ZRDN_NAME" "MISS $target_id $shot_target_type"
+            echo "[$ZRDN_NAME] $result_msg"
+            unset "shot_targets[$target_id]"
+            latest_mtime=$(get_zrdn_hot_retry_mtime "$target_id" "${shot_last_mtime:-0}")
+            if (( AMMO > 0 )) && [[ "$shot_target_type" != "BB_BR" ]] && (( latest_mtime > 0 )); then
+                fire_zrdn_target "$target_id" "$shot_target_type" "$latest_mtime" 1
+            fi
+        fi
     done
 }
 
@@ -347,23 +397,17 @@ while true; do
         fi
     fi
 
-    # Сначала обрабатываем готовые результаты выстрелов, чтобы повторный пуск
-    # после промаха не ждал полного сканирования целей.
-    process_zrdn_shot_results
-
-    # Пока по цели ожидается результат выстрела, крутим горячий цикл без
-    # дорогого scan_targets: это ускоряет повторный пуск после промаха.
-    if (( ${#shot_targets[@]} > 0 )); then
-        sleep "$SHOT_RESULT_POLL_INTERVAL"
-        continue
-    fi
-
     # Сканирование целей
     current_targets=()
     current_target_mtimes=()
 
     while read -r target_id tx ty target_mtime; do
         [[ -z "$target_id" ]] && continue
+        if [[ "$target_id" =~ b$ ]]; then
+            ignored_targets[$target_id]=1
+            continue
+        fi
+        [[ -n "${ignored_targets[$target_id]:-}" ]] && continue
         is_target_destroyed "$target_id" && continue
         # Проверка: цель в зоне ЗРДН (360 градусов)
         if is_in_range "$ZRDN_X" "$ZRDN_Y" "$ZRDN_RANGE" "$tx" "$ty"; then
@@ -372,17 +416,17 @@ while true; do
         fi
     done < <(scan_targets)
 
-    for target_id in "${!current_targets[@]}"; do
-        process_zrdn_shot_results
+    # Результат выстрела определяется после обновления списка текущих целей:
+    # цель исчезла — поражена; две новые координаты — промах.
+    process_zrdn_shot_results
 
+    for target_id in "${!current_targets[@]}"; do
         if [[ -n "${tracked_target_types[$target_id]}" ]] || [[ -n "${pending_fire_targets[$target_id]}" ]] || [[ -n "${shot_targets[$target_id]}" ]]; then
             refresh_zrdn_track_from_current "$target_id"
         fi
     done
 
     for target_id in "${!current_targets[@]}"; do
-        process_zrdn_shot_results
-
         tx=$(echo "${current_targets[$target_id]}" | awk '{print $1}')
         ty=$(echo "${current_targets[$target_id]}" | awk '{print $2}')
 
@@ -418,10 +462,6 @@ while true; do
             fi
         fi
     done
-
-    # И повторяем после обновления текущих отметок, чтобы при наличии новой
-    # засечки использовать именно её.
-    process_zrdn_shot_results
 
     try_pending_zrdn_targets
 

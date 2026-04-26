@@ -585,7 +585,9 @@ scan_targets() {
 get_latest_two_visible_marks() {
     local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
     local latest_file="" latest_time=0 prev_file="" prev_time=0
-    local f decoded_id ftime coords tx ty
+    local f decoded_id ftime coords tx ty current_time
+
+    current_time=$(current_time_ms)
 
     for f in "$TARGETS_DIR"/*; do
         [[ -f "$f" ]] || continue
@@ -610,6 +612,7 @@ get_latest_two_visible_marks() {
     done
 
     [[ -z "$prev_file" || -z "$latest_file" ]] && return 1
+    (( current_time - latest_time > TARGET_STALE_SECONDS * 1000 )) && return 1
 
     local prev_coords latest_coords
     prev_coords=$(read_target_coords "$prev_file")
@@ -632,7 +635,9 @@ get_latest_two_visible_marks() {
 get_latest_visible_mark() {
     local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
     local latest_file="" latest_time=0
-    local f decoded_id ftime coords tx ty
+    local f decoded_id ftime coords tx ty current_time
+
+    current_time=$(current_time_ms)
 
     for f in "$TARGETS_DIR"/*; do
         [[ -f "$f" ]] || continue
@@ -657,6 +662,7 @@ get_latest_visible_mark() {
     done
 
     [[ -n "$latest_file" ]] || return 1
+    (( current_time - latest_time > TARGET_STALE_SECONDS * 1000 )) && return 1
     coords=$(read_target_coords "$latest_file")
     [[ -n "$coords" ]] || return 1
     echo "$coords $latest_time"
