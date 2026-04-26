@@ -15,7 +15,7 @@ DESTROY_DIR="/tmp/GenTargets/Destroy"
 GEN_TARGETS_LOG="/tmp/GenTargets/GenTargets.log"
 
 # Ключ шифрования для HMAC (общий секрет)
-HMAC_KEY="VKO_SECRET_KEY_2024_kr"
+HMAC_KEY="VKO_SECRET_KEY_2026_kr"
 
 # Интервал проверки целей (секунды)
 CHECK_INTERVAL=0.5
