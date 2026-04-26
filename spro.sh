@@ -287,6 +287,7 @@ try_pending_spro_targets() {
 }
 
 process_spro_shot_results() {
+    local generator_only="${1:-0}"
     local target_id shot_info shot_target_type shot_last_mtime latest_mtime tx ty now_ms elapsed result_msg generator_result
 
     for target_id in "${!shot_targets[@]}"; do
@@ -323,6 +324,8 @@ process_spro_shot_results() {
             fi
             continue
         fi
+
+        (( generator_only )) && continue
 
         if [[ -z "${current_targets[$target_id]:-}" ]]; then
             if get_latest_fresh_target_mtime "$target_id" >/dev/null 2>&1; then
@@ -420,6 +423,9 @@ while true; do
             echo "[$SPRO_NAME] Автопополнение боекомплекта: $AMMO"
         fi
     fi
+
+    # Быстро забираем результат генератора до дорогого сканирования целей.
+    process_spro_shot_results 1
 
     # Сканирование целей
     current_targets=()
