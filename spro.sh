@@ -12,6 +12,7 @@ trap "cleanup '$SPRO_NAME'; exit 0" SIGTERM SIGINT EXIT
 LOGFILE="$LOG_DIR/${SPRO_NAME}.log"
 AMMO=$SPRO_AMMO
 AMMO_EMPTY_TIME=0
+STATE_TTL_SEC="${TARGET_STATE_TTL_SEC:-12}"
 
 echo "[$SPRO_NAME] Запуск СПРО"
 echo "[$SPRO_NAME] Координаты: X=$SPRO_X Y=$SPRO_Y, Радиус: $SPRO_RANGE м"
@@ -20,233 +21,73 @@ echo "[$SPRO_NAME] Боезапас: $AMMO противоракет"
 log_message "$LOGFILE" "$SPRO_NAME" "Запуск СПРО. Координаты: X=$SPRO_X Y=$SPRO_Y, Радиус: $SPRO_RANGE"
 send_to_kp "$SPRO_NAME" "STATUS $SPRO_NAME ONLINE AMMO:$AMMO"
 
-# Ассоциативные массивы
-declare -A reported_targets   # ID -> 1
-declare -A shot_targets       # ID -> target_type:last_mtime
-declare -A pending_fire_targets  # ID -> target_type
-declare -A target_retry_deadlines # ID -> epoch seconds
-declare -A ignored_targets
+declare -A first_x
+declare -A first_y
+declare -A target_type
+declare -A detected_sent
+declare -A ignore_target
+declare -A shot_pending
 declare -A shot_no
 declare -A shot_x
 declare -A shot_y
-declare -A shot_started_at
-declare -A shot_generator_log_start
 declare -A shot_seen_after
 declare -A shot_seen_x
 declare -A shot_seen_y
-declare -A tracked_target_types
-declare -A tracked_last_x
-declare -A tracked_last_y
-declare -A tracked_last_mtime
-declare -A tracked_vx
-declare -A tracked_vy
-declare -A tracked_last_seen_at
-declare -A current_targets
-declare -A current_target_mtimes
+declare -A last_seen_epoch
 
-clear_spro_track() {
-    local target_id="$1"
-    unset "tracked_target_types[$target_id]"
-    unset "tracked_last_x[$target_id]"
-    unset "tracked_last_y[$target_id]"
-    unset "tracked_last_mtime[$target_id]"
-    unset "tracked_vx[$target_id]"
-    unset "tracked_vy[$target_id]"
-    unset "tracked_last_seen_at[$target_id]"
-}
-
-drop_spro_target() {
-    local target_id="$1"
-    unset "pending_fire_targets[$target_id]"
-    unset "target_retry_deadlines[$target_id]"
-    unset "reported_targets[$target_id]"
-    unset "shot_targets[$target_id]"
-    unset "shot_x[$target_id]"
-    unset "shot_y[$target_id]"
-    unset "shot_started_at[$target_id]"
-    unset "shot_generator_log_start[$target_id]"
-    unset "shot_seen_after[$target_id]"
-    unset "shot_seen_x[$target_id]"
-    unset "shot_seen_y[$target_id]"
-    release_target_engagement "$target_id" "$SPRO_NAME" 2>/dev/null || true
-    clear_spro_track "$target_id"
-}
-
-ignore_spro_target() {
-    local target_id="$1"
-    ignored_targets[$target_id]=1
-    drop_spro_target "$target_id"
-}
-
-update_spro_track_from_marks() {
-    local target_id="$1" target_type="$2" prev_x="$3" prev_y="$4" prev_mtime="$5" latest_x="$6" latest_y="$7" latest_mtime="$8"
-    local dt_ms vx vy
-
-    dt_ms=$((latest_mtime - prev_mtime))
-    if (( dt_ms <= 0 )); then
-        dt_ms=1000
-    fi
-
-    vx=$((((latest_x - prev_x) * 1000) / dt_ms))
-    vy=$((((latest_y - prev_y) * 1000) / dt_ms))
-
-    tracked_target_types[$target_id]="$target_type"
-    tracked_last_x[$target_id]="$latest_x"
-    tracked_last_y[$target_id]="$latest_y"
-    tracked_last_mtime[$target_id]="$latest_mtime"
-    tracked_vx[$target_id]="$vx"
-    tracked_vy[$target_id]="$vy"
-    tracked_last_seen_at[$target_id]=$(date +%s)
-}
-
-refresh_spro_track_from_current() {
-    local target_id="$1"
-    local tx ty target_mtime track prev_x prev_y prev_mtime latest_x latest_y latest_mtime speed target_type
-
-    [[ -n "${current_targets[$target_id]}" ]] || return 1
-
-    read -r tx ty <<< "${current_targets[$target_id]}"
-    target_mtime="${current_target_mtimes[$target_id]:-0}"
-    (( target_mtime > 0 )) || return 1
-
-    track=$(get_latest_two_visible_marks "circle" "$target_id" "$SPRO_X" "$SPRO_Y" "$SPRO_RANGE" 2>/dev/null || true)
-    if [[ -n "$track" ]]; then
-        read -r prev_x prev_y prev_mtime latest_x latest_y latest_mtime <<< "$track"
-        if (( latest_mtime > ${tracked_last_mtime[$target_id]:-0} )); then
-            speed=$(calc_speed "$prev_x" "$prev_y" "$latest_x" "$latest_y")
-            target_type=$(get_target_type "$speed")
-            update_spro_track_from_marks "$target_id" "$target_type" "$prev_x" "$prev_y" "$prev_mtime" "$latest_x" "$latest_y" "$latest_mtime"
-            return 0
+cleanup_stale_targets() {
+    local now_epoch="$1" target_id last
+    for target_id in "${!last_seen_epoch[@]}"; do
+        last="${last_seen_epoch[$target_id]}"
+        if (( now_epoch - last > STATE_TTL_SEC )); then
+            unset "last_seen_epoch[$target_id]"
+            unset "first_x[$target_id]"
+            unset "first_y[$target_id]"
+            unset "target_type[$target_id]"
+            unset "detected_sent[$target_id]"
+            unset "ignore_target[$target_id]"
+            unset "shot_pending[$target_id]"
+            unset "shot_no[$target_id]"
+            unset "shot_x[$target_id]"
+            unset "shot_y[$target_id]"
+            unset "shot_seen_after[$target_id]"
+            unset "shot_seen_x[$target_id]"
+            unset "shot_seen_y[$target_id]"
         fi
-    fi
-
-    if (( target_mtime >= ${tracked_last_mtime[$target_id]:-0} )); then
-        tracked_last_x[$target_id]="$tx"
-        tracked_last_y[$target_id]="$ty"
-        tracked_last_mtime[$target_id]="$target_mtime"
-        tracked_last_seen_at[$target_id]=$(date +%s)
-    fi
+    done
 }
 
-spro_track_retryable() {
-    local target_id="$1"
-    local target_type now_s last_seen last_x last_y last_mtime
-
-    target_type="${tracked_target_types[$target_id]:-}"
-    [[ "$target_type" == "BB_BR" ]] || return 1
-
-    last_seen="${tracked_last_seen_at[$target_id]:-0}"
-    now_s=$(date +%s)
-    (( last_seen > 0 )) || return 1
-    (( now_s - last_seen <= TARGET_RETRY_HOLD_SECONDS )) || return 1
-
-    last_x="${tracked_last_x[$target_id]:-}"
-    last_y="${tracked_last_y[$target_id]:-}"
-    last_mtime="${tracked_last_mtime[$target_id]:-0}"
-    [[ -n "$last_x" && -n "$last_y" ]] || return 1
-    (( last_mtime > 0 )) || return 1
-    return 0
+send_detect() {
+    local target_id="$1" tx="$2" ty="$3" speed="$4"
+    local report_msg
+    report_msg="Обнаружена цель id:$target_id координаты $tx $ty тип:BB_BR скорость:$speed"
+    log_message "$LOGFILE" "$SPRO_NAME" "$report_msg"
+    send_to_kp "$SPRO_NAME" "DETECT $target_id $tx $ty BB_BR $speed"
+    echo "[$SPRO_NAME] $report_msg"
 }
 
-hold_spro_target_for_retry() {
-    local target_id="$1" target_type="${2:-BB_BR}"
-    pending_fire_targets[$target_id]="$target_type"
-    reported_targets[$target_id]=1
-    target_retry_deadlines[$target_id]=$(( $(date +%s) + TARGET_RETRY_HOLD_SECONDS ))
-}
+fire_target() {
+    local target_id="$1" tx="$2" ty="$3"
+    local shot_msg empty_msg
 
-get_spro_retry_mtime() {
-    local target_id="$1"
-    local latest_mark latest_x latest_y latest_mtime
+    (( AMMO > 0 )) || return 1
 
-    if [[ -n "${current_targets[$target_id]}" ]]; then
-        refresh_spro_track_from_current "$target_id"
-        latest_mtime="${tracked_last_mtime[$target_id]:-0}"
-        (( latest_mtime > 0 )) && {
-            echo "$latest_mtime"
-            return 0
-        }
-    fi
+    mkdir -p "$DESTROY_DIR"
+    printf '%s\n' "$SPRO_NAME" > "$DESTROY_DIR/$target_id"
 
-    latest_mark=$(get_latest_visible_mark "circle" "$target_id" "$SPRO_X" "$SPRO_Y" "$SPRO_RANGE" 2>/dev/null || true)
-    [[ -n "$latest_mark" ]] || return 1
-
-    read -r latest_x latest_y latest_mtime <<< "$latest_mark"
-    tracked_last_x[$target_id]="$latest_x"
-    tracked_last_y[$target_id]="$latest_y"
-    tracked_last_mtime[$target_id]="$latest_mtime"
-    tracked_last_seen_at[$target_id]=$(date +%s)
-    echo "$latest_mtime"
-}
-
-resolve_spro_retry_mtime() {
-    local target_id="$1" fallback_mtime="${2:-0}"
-    local latest_mtime=0
-
-    latest_mtime=$(get_spro_retry_mtime "$target_id" 2>/dev/null || echo 0)
-    if (( latest_mtime > fallback_mtime )); then
-        echo "$latest_mtime"
-    else
-        echo "$fallback_mtime"
-    fi
-}
-
-get_spro_hot_retry_mtime() {
-    local target_id="$1" fallback_mtime="${2:-0}"
-    local tracked_mtime="${tracked_last_mtime[$target_id]:-0}"
-
-    if (( tracked_mtime > fallback_mtime )); then
-        echo "$tracked_mtime"
-    else
-        echo "$fallback_mtime"
-    fi
-}
-
-fire_spro_target() {
-    local target_id="$1" target_type="$2" latest_mtime="$3" retry_owner="${4:-0}"
-    local shot_msg empty_msg tx ty generator_log_start
-
-    if is_target_destroyed "$target_id"; then
-        return 1
-    fi
-
-    if (( AMMO <= 0 )); then
-        return 1
-    fi
-
-    if (( retry_owner )); then
-        if [[ "$(get_engagement_owner "$target_id" 2>/dev/null || true)" != "$SPRO_NAME" ]]; then
-            if ! claim_target_engagement "$target_id" "$SPRO_NAME"; then
-                return 1
-            fi
-        else
-            refresh_target_engagement "$target_id" "$SPRO_NAME" 2>/dev/null || true
-        fi
-    else
-        if ! claim_target_engagement "$target_id" "$SPRO_NAME"; then
-            return 1
-        fi
-    fi
-
-    generator_log_start=$(get_generator_log_position)
-    echo "$SPRO_NAME" > "$DESTROY_DIR/$target_id"
-    ((AMMO--))
     shot_no[$target_id]=$(( ${shot_no[$target_id]:-0} + 1 ))
-    shot_targets[$target_id]="$target_type:$latest_mtime"
-    tx="${tracked_last_x[$target_id]:-0}"
-    ty="${tracked_last_y[$target_id]:-0}"
+    ((AMMO--))
+    shot_msg="Стрельба по цели id:$target_id тип:BB_BR пуск №${shot_no[$target_id]}. Осталось противоракет: $AMMO"
+    log_message "$LOGFILE" "$SPRO_NAME" "$shot_msg"
+    send_to_kp "$SPRO_NAME" "SHOT $target_id BB_BR AMMO:$AMMO"
+    echo "[$SPRO_NAME] $shot_msg"
+
+    shot_pending[$target_id]=1
     shot_x[$target_id]="$tx"
     shot_y[$target_id]="$ty"
-    shot_started_at[$target_id]=$(current_time_ms)
-    shot_generator_log_start[$target_id]="$generator_log_start"
     shot_seen_after[$target_id]=0
-    unset "shot_seen_x[$target_id]"
-    unset "shot_seen_y[$target_id]"
-
-    shot_msg="Стрельба по цели id:$target_id тип:$target_type пуск №${shot_no[$target_id]}. Осталось противоракет: $AMMO"
-    log_message "$LOGFILE" "$SPRO_NAME" "$shot_msg"
-    send_to_kp "$SPRO_NAME" "SHOT $target_id $target_type AMMO:$AMMO"
-    echo "[$SPRO_NAME] $shot_msg"
+    shot_seen_x[$target_id]="$tx"
+    shot_seen_y[$target_id]="$ty"
 
     if (( AMMO <= 0 )); then
         AMMO_EMPTY_TIME=$(date +%s)
@@ -255,147 +96,16 @@ fire_spro_target() {
         send_to_kp "$SPRO_NAME" "AMMO_EMPTY $SPRO_NAME"
         echo "[$SPRO_NAME] $empty_msg"
     fi
-
-    return 0
-}
-
-try_pending_spro_targets() {
-    local target_id latest_mtime target_type
-
-    (( AMMO <= 0 )) && return 0
-
-    for target_id in "${!pending_fire_targets[@]}"; do
-        target_type="${pending_fire_targets[$target_id]}"
-        [[ -n "${shot_targets[$target_id]}" ]] && continue
-        [[ "$target_type" != "BB_BR" ]] && continue
-        if is_target_destroyed "$target_id"; then
-            drop_spro_target "$target_id"
-            continue
-        fi
-
-        latest_mtime=$(get_spro_retry_mtime "$target_id" 2>/dev/null || echo 0)
-        (( latest_mtime > 0 )) || continue
-
-        if fire_spro_target "$target_id" "$target_type" "$latest_mtime"; then
-            reported_targets[$target_id]=1
-            unset "pending_fire_targets[$target_id]"
-            unset "target_retry_deadlines[$target_id]"
-        elif is_target_destroyed "$target_id"; then
-            drop_spro_target "$target_id"
-        fi
-    done
-}
-
-process_spro_shot_results() {
-    local generator_only="${1:-0}"
-    local target_id shot_info shot_target_type shot_last_mtime latest_mtime tx ty now_ms elapsed result_msg generator_result
-
-    for target_id in "${!shot_targets[@]}"; do
-        shot_info="${shot_targets[$target_id]:-BB_BR:0}"
-        shot_target_type="${shot_info%%:*}"
-        shot_last_mtime="${shot_info##*:}"
-
-        if is_target_destroyed "$target_id"; then
-            ignore_spro_target "$target_id"
-            continue
-        fi
-
-        generator_result=$(get_generator_result_since "${shot_generator_log_start[$target_id]:-0}" "$target_id" "$SPRO_NAME" 2>/dev/null || true)
-        if [[ "$generator_result" == "DESTROYED" ]]; then
-            mark_target_destroyed "$target_id" "$SPRO_NAME"
-            result_msg="Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
-            log_message "$LOGFILE" "$SPRO_NAME" "$result_msg"
-            send_to_kp "$SPRO_NAME" "DESTROYED $target_id $shot_target_type"
-            echo "[$SPRO_NAME] $result_msg"
-            ignore_spro_target "$target_id"
-            continue
-        fi
-
-        if [[ "$generator_result" == "MISS" ]]; then
-            result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
-            log_message "$LOGFILE" "$SPRO_NAME" "$result_msg"
-            send_to_kp "$SPRO_NAME" "MISS $target_id $shot_target_type"
-            echo "[$SPRO_NAME] $result_msg"
-            unset "shot_targets[$target_id]"
-            unset "shot_seen_after[$target_id]"
-            latest_mtime=$(get_spro_retry_mtime "$target_id" 2>/dev/null || echo 0)
-            if (( AMMO > 0 )) && [[ "$shot_target_type" == "BB_BR" ]] && (( latest_mtime > 0 )); then
-                fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime" 1
-            fi
-            continue
-        fi
-
-        (( generator_only )) && continue
-
-        if [[ -z "${current_targets[$target_id]:-}" ]]; then
-            if get_latest_fresh_target_mtime "$target_id" >/dev/null 2>&1; then
-                result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
-                log_message "$LOGFILE" "$SPRO_NAME" "$result_msg"
-                send_to_kp "$SPRO_NAME" "MISS $target_id $shot_target_type"
-                echo "[$SPRO_NAME] $result_msg"
-                unset "shot_targets[$target_id]"
-                unset "shot_seen_after[$target_id]"
-                release_target_engagement "$target_id" "$SPRO_NAME" 2>/dev/null || true
-                continue
-            fi
-            mark_target_destroyed "$target_id" "$SPRO_NAME"
-            result_msg="Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
-            log_message "$LOGFILE" "$SPRO_NAME" "$result_msg"
-            send_to_kp "$SPRO_NAME" "DESTROYED $target_id $shot_target_type"
-            echo "[$SPRO_NAME] $result_msg"
-            ignore_spro_target "$target_id"
-            continue
-        fi
-
-        refresh_spro_track_from_current "$target_id"
-        read -r tx ty <<< "${current_targets[$target_id]}"
-        if [[ "$tx" != "${shot_x[$target_id]:-}" || "$ty" != "${shot_y[$target_id]:-}" ]]; then
-            if [[ "${shot_seen_after[$target_id]:-0}" -eq 0 ]]; then
-                shot_seen_after[$target_id]=1
-                shot_seen_x[$target_id]="$tx"
-                shot_seen_y[$target_id]="$ty"
-                continue
-            fi
-
-            if [[ "$tx" != "${shot_seen_x[$target_id]:-}" || "$ty" != "${shot_seen_y[$target_id]:-}" ]]; then
-                result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
-                log_message "$LOGFILE" "$SPRO_NAME" "$result_msg"
-                send_to_kp "$SPRO_NAME" "MISS $target_id $shot_target_type"
-                echo "[$SPRO_NAME] $result_msg"
-            unset "shot_targets[$target_id]"
-            unset "shot_seen_after[$target_id]"
-            latest_mtime=$(get_spro_retry_mtime "$target_id" 2>/dev/null || echo 0)
-                if (( AMMO > 0 )) && [[ "$shot_target_type" == "BB_BR" ]] && (( latest_mtime > 0 )); then
-                    fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime" 1
-                fi
-                continue
-            fi
-        fi
-
-        now_ms=$(current_time_ms)
-        elapsed=$(( now_ms - ${shot_started_at[$target_id]:-$now_ms} ))
-        if (( elapsed >= SHOT_RESULT_FAILSAFE_WAIT * 1000 )); then
-            result_msg="ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
-            log_message "$LOGFILE" "$SPRO_NAME" "$result_msg"
-            send_to_kp "$SPRO_NAME" "MISS $target_id $shot_target_type"
-            echo "[$SPRO_NAME] $result_msg"
-            unset "shot_targets[$target_id]"
-            latest_mtime=$(get_spro_retry_mtime "$target_id" 2>/dev/null || echo 0)
-            if (( AMMO > 0 )) && [[ "$shot_target_type" == "BB_BR" ]] && (( latest_mtime > 0 )); then
-                fire_spro_target "$target_id" "$shot_target_type" "$latest_mtime" 1
-            fi
-        fi
-    done
 }
 
 while true; do
-    # Heartbeat
+    now_epoch=$(date +%s)
+
     if [[ -f "$MSG_DIR/heartbeat/${SPRO_NAME}_request" ]]; then
         rm -f "$MSG_DIR/heartbeat/${SPRO_NAME}_request"
         send_heartbeat_response "$SPRO_NAME"
     fi
 
-    # Сообщения от КП
     for msg_file in "$MSG_DIR/from_kp/${SPRO_NAME}_"*; do
         [[ -f "$msg_file" ]] || continue
         encrypted=$(cat "$msg_file" 2>/dev/null)
@@ -405,6 +115,7 @@ while true; do
             send_to_kp "$SPRO_NAME" "NSD $SPRO_NAME Обнаружена попытка подмены сообщения"
         elif [[ "$decoded" == REFILL* ]]; then
             AMMO=$SPRO_AMMO
+            AMMO_EMPTY_TIME=0
             log_message "$LOGFILE" "$SPRO_NAME" "Боекомплект пополнен: $AMMO противоракет"
             send_to_kp "$SPRO_NAME" "REFILL $SPRO_NAME AMMO:$AMMO"
             echo "[$SPRO_NAME] Боекомплект пополнен: $AMMO"
@@ -412,10 +123,8 @@ while true; do
         rm -f "$msg_file"
     done
 
-    # Автопополнение боекомплекта
     if (( AMMO <= 0 && AMMO_EMPTY_TIME > 0 )); then
-        local_now=$(date +%s)
-        if (( local_now - AMMO_EMPTY_TIME >= AMMO_REFILL_TIME )); then
+        if (( now_epoch - AMMO_EMPTY_TIME >= AMMO_REFILL_TIME )); then
             AMMO=$SPRO_AMMO
             AMMO_EMPTY_TIME=0
             log_message "$LOGFILE" "$SPRO_NAME" "Боекомплект автоматически пополнен: $AMMO противоракет"
@@ -424,96 +133,79 @@ while true; do
         fi
     fi
 
-    # Быстро забираем результат генератора до дорогого сканирования целей.
-    process_spro_shot_results 1
+    declare -A present_now=()
 
-    # Сканирование целей
-    current_targets=()
-    current_target_mtimes=()
+    while read -r target_id tx ty _target_mtime; do
+        [[ -n "$target_id" ]] || continue
+        present_now[$target_id]=1
+        last_seen_epoch[$target_id]="$now_epoch"
 
-    while read -r target_id tx ty target_mtime; do
-        [[ -z "$target_id" ]] && continue
-        if [[ ! "$target_id" =~ b$ ]]; then
-            ignored_targets[$target_id]=1
+        if [[ "${shot_pending[$target_id]:-0}" -eq 1 ]]; then
+            if [[ "$tx" != "${shot_x[$target_id]:-}" || "$ty" != "${shot_y[$target_id]:-}" ]]; then
+                if [[ "${shot_seen_after[$target_id]:-0}" -eq 0 ]]; then
+                    shot_seen_after[$target_id]=1
+                    shot_seen_x[$target_id]="$tx"
+                    shot_seen_y[$target_id]="$ty"
+                elif [[ "$tx" != "${shot_seen_x[$target_id]:-}" || "$ty" != "${shot_seen_y[$target_id]:-}" ]]; then
+                    log_message "$LOGFILE" "$SPRO_NAME" "ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                    send_to_kp "$SPRO_NAME" "MISS $target_id BB_BR"
+                    echo "[$SPRO_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
+                    shot_pending[$target_id]=0
+                    shot_seen_after[$target_id]=0
+                fi
+            fi
             continue
         fi
-        [[ -n "${ignored_targets[$target_id]:-}" ]] && continue
-        is_target_destroyed "$target_id" && continue
-        # Проверка: цель в зоне СПРО (360 градусов)
-        if is_in_range "$SPRO_X" "$SPRO_Y" "$SPRO_RANGE" "$tx" "$ty"; then
-            current_targets[$target_id]="$tx $ty"
-            current_target_mtimes[$target_id]="$target_mtime"
+
+        if [[ ! "$target_id" =~ b$ ]]; then
+            ignore_target[$target_id]=1
+            continue
         fi
+
+        [[ "${ignore_target[$target_id]:-0}" -eq 1 ]] && continue
+
+        if ! is_in_range "$SPRO_X" "$SPRO_Y" "$SPRO_RANGE" "$tx" "$ty"; then
+            continue
+        fi
+
+        if [[ -z "${first_x[$target_id]:-}" ]]; then
+            first_x[$target_id]="$tx"
+            first_y[$target_id]="$ty"
+            continue
+        fi
+
+        if [[ -z "${target_type[$target_id]:-}" ]]; then
+            speed=$(calc_speed "${first_x[$target_id]}" "${first_y[$target_id]}" "$tx" "$ty")
+            (( speed > 0 )) || continue
+            target_type[$target_id]="$(get_target_type "$speed")"
+            if [[ "${target_type[$target_id]}" != "BB_BR" ]]; then
+                ignore_target[$target_id]=1
+                continue
+            fi
+        fi
+
+        if [[ "${detected_sent[$target_id]:-0}" -eq 0 ]]; then
+            send_detect "$target_id" "$tx" "$ty" "$speed"
+            detected_sent[$target_id]=1
+        fi
+
+        (( AMMO > 0 )) || continue
+        fire_target "$target_id" "$tx" "$ty"
     done < <(scan_targets)
 
-    # Результат выстрела определяется после обновления списка текущих целей:
-    # цель исчезла — поражена; две новые координаты — промах.
-    process_spro_shot_results
-
-    for target_id in "${!current_targets[@]}"; do
-        if [[ -n "${tracked_target_types[$target_id]}" ]] || [[ -n "${pending_fire_targets[$target_id]}" ]] || [[ -n "${shot_targets[$target_id]}" ]]; then
-            refresh_spro_track_from_current "$target_id"
+    for target_id in "${!shot_pending[@]}"; do
+        [[ "${shot_pending[$target_id]}" -eq 1 ]] || continue
+        if [[ -z "${present_now[$target_id]:-}" ]]; then
+            mark_target_destroyed "$target_id" "$SPRO_NAME"
+            log_message "$LOGFILE" "$SPRO_NAME" "Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
+            send_to_kp "$SPRO_NAME" "DESTROYED $target_id BB_BR"
+            echo "[$SPRO_NAME] Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
+            shot_pending[$target_id]=0
+            shot_seen_after[$target_id]=0
+            ignore_target[$target_id]=1
         fi
     done
 
-    for target_id in "${!current_targets[@]}"; do
-        tx=$(echo "${current_targets[$target_id]}" | awk '{print $1}')
-        ty=$(echo "${current_targets[$target_id]}" | awk '{print $2}')
-
-        if [[ -z "${reported_targets[$target_id]}" ]]; then
-            track=$(get_latest_two_visible_marks "circle" "$target_id" "$SPRO_X" "$SPRO_Y" "$SPRO_RANGE") || continue
-            read -r prev_x prev_y prev_mtime latest_x latest_y latest_mtime <<< "$track"
-            (( latest_mtime <= prev_mtime )) && continue
-
-            speed=$(calc_speed "$prev_x" "$prev_y" "$latest_x" "$latest_y")
-            target_type=$(get_target_type "$speed")
-            [[ "$target_type" != "BB_BR" ]] && continue
-            tx=$latest_x
-            ty=$latest_y
-            update_spro_track_from_marks "$target_id" "$target_type" "$prev_x" "$prev_y" "$prev_mtime" "$latest_x" "$latest_y" "$latest_mtime"
-
-            timestamp=$(date +"%H:%M:%S:%3N")
-
-            # Доклад об обнаружении
-            report_msg="В $timestamp Обнаружена цель id:$target_id координаты $tx $ty тип:$target_type скорость:$speed"
-            log_message "$LOGFILE" "$SPRO_NAME" "$report_msg"
-            send_to_kp "$SPRO_NAME" "DETECT $target_id $tx $ty $target_type $speed"
-            echo "[$SPRO_NAME] $report_msg"
-
-            reported_targets[$target_id]=1
-
-            # СПРО уничтожает только ББ БР на второй засечке.
-            if [[ "$target_type" == "BB_BR" ]]; then
-                if ! fire_spro_target "$target_id" "$target_type" "$latest_mtime"; then
-                    if is_target_destroyed "$target_id"; then
-                        drop_spro_target "$target_id"
-                    else
-                        hold_spro_target_for_retry "$target_id" "$target_type"
-                    fi
-                fi
-            fi
-        fi
-    done
-
-    try_pending_spro_targets
-
-    # Очистка данных о пропавших целях
-    for target_id in "${!reported_targets[@]}"; do
-        if is_target_destroyed "$target_id"; then
-            drop_spro_target "$target_id"
-            continue
-        fi
-
-        if [[ -z "${current_targets[$target_id]}" ]] && [[ -z "${shot_targets[$target_id]}" ]]; then
-            if [[ -n "${pending_fire_targets[$target_id]}" ]]; then
-                retry_deadline="${target_retry_deadlines[$target_id]:-0}"
-                if (( retry_deadline > $(date +%s) )); then
-                    continue
-                fi
-            fi
-
-            drop_spro_target "$target_id"
-        fi
-    done
+    cleanup_stale_targets "$now_epoch"
     sleep "$CHECK_INTERVAL"
 done

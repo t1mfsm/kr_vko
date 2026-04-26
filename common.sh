@@ -549,12 +549,16 @@ get_file_mtime() {
 scan_targets() {
     declare -A latest_files
     declare -A latest_times
-    local current_time
+    local current_time current_time_s scan_from scan_margin
     current_time=$(date +%s%3N 2>/dev/null || echo $(( $(date +%s) * 1000 )))
+    current_time_s=$(date +%s)
+    scan_margin="${TARGET_SCAN_MARGIN_SECONDS:-2}"
+    scan_from=$(( current_time_s - TARGET_STALE_SECONDS - scan_margin ))
+    (( scan_from < 0 )) && scan_from=0
 
     local f decoded_id ftime
 
-    for f in "$TARGETS_DIR"/*; do
+    while IFS= read -r f; do
         [[ -f "$f" ]] || continue
         decoded_id=$(decode_target_id "$f")
         [[ -z "$decoded_id" ]] && continue
@@ -564,7 +568,10 @@ scan_targets() {
             latest_times[$decoded_id]=$ftime
             latest_files[$decoded_id]="$f"
         fi
-    done
+    done < <(
+        find "$TARGETS_DIR" -maxdepth 1 -type f -newermt "@$scan_from" -print 2>/dev/null ||
+        find "$TARGETS_DIR" -maxdepth 1 -type f -print 2>/dev/null
+    )
 
     for decoded_id in "${!latest_files[@]}"; do
         (( current_time - ${latest_times[$decoded_id]} > TARGET_STALE_SECONDS * 1000 )) && continue
