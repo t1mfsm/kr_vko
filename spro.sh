@@ -162,6 +162,8 @@ while true; do
 
     while read -r target_id tx ty _target_mtime; do
         [[ -n "$target_id" ]] || continue
+        is_target_destroyed "$target_id" && continue
+        present_now[$target_id]=1
         present_now[$target_id]=1
         last_seen_epoch[$target_id]="$now_epoch"
         last_x[$target_id]="$tx"
