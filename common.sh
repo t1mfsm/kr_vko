@@ -1,21 +1,16 @@
 #!/bin/bash
-# Общие функции для всех элементов системы ВКО
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 
-# --- Проверки безопасности ---
 check_environment() {
-    # Проверка: не root
     if [[ $EUID -eq 0 ]]; then
         echo "ОШИБКА: Запуск от имени root запрещен!" >&2
         exit 1
     fi
-    # Проверка: Linux
     if [[ "$(uname -s)" != "Linux" ]]; then
         echo "ОШИБКА: Запуск разрешен только в Linux. Текущая ОС: $(uname -s)" >&2
         exit 1
     fi
-    # Проверка: bash
     if [[ -z "$BASH_VERSION" ]]; then
         echo "ОШИБКА: Требуется интерпретатор Bash!" >&2
         exit 1
@@ -26,7 +21,6 @@ check_environment() {
     fi
 }
 
-# --- Проверка дублирования процесса ---
 check_single_instance() {
     local name="$1"
     mkdir -p "$PID_DIR"
@@ -43,7 +37,6 @@ check_single_instance() {
     echo $$ > "$pidfile"
 }
 
-# --- Очистка при завершении ---
 cleanup() {
     local name="$1"
     rm -f "$PID_DIR/${name}.pid"
@@ -148,39 +141,29 @@ claim_target_engagement() {
     return 1
 }
 
-# --- Декодирование ID цели из имени файла ---
-# Формат файла: interleaved random[2] + id_hex[2] по 7 пар, + 2 random hex
-# Итого 30 символов в имени
 decode_target_id() {
     local filename="$1"
-    # Берем только имя файла без пути
     filename=$(basename "$filename")
     local hex_id=""
     local i
-    # Извлекаем каждую вторую пару hex-символов (позиции 2-3, 6-7, 10-11, ...)
     for ((i = 2; i < 28; i += 4)); do
         hex_id+="${filename:$i:2}"
     done
-    # Конвертируем hex в ASCII
     echo -n "$hex_id" | xxd -r -p 2>/dev/null
 }
 
-# --- Вычисление расстояния между двумя точками ---
 calc_distance() {
     local x1=$1 y1=$2 x2=$3 y2=$4
     local dx=$((x2 - x1))
     local dy=$((y2 - y1))
-    # Используем bc для вычисления sqrt
     echo "scale=0; sqrt($dx * $dx + $dy * $dy)" | bc -l
 }
 
-# --- Вычисление скорости цели ---
 calc_speed() {
     local x1=$1 y1=$2 x2=$3 y2=$4
     calc_distance "$x1" "$y1" "$x2" "$y2"
 }
 
-# --- Вычисление скорости цели в м/с с учетом интервала между засечками ---
 calc_speed_mps() {
     local x1=$1 y1=$2 x2=$3 y2=$4 dt_millis=$5
     local distance
@@ -193,21 +176,19 @@ calc_speed_mps() {
     echo $(((distance * 1000) / dt_millis))
 }
 
-# --- Определение типа цели по скорости ---
 get_target_type() {
     local speed=$1
     if (( speed >= SPEED_BB_MIN )); then
-        echo "BB_BR"  # Боевой блок баллистической ракеты
+        echo "BB_BR"
     elif (( speed >= SPEED_KR_MIN )); then
-        echo "KR"     # Крылатая ракета
+        echo "KR"
     elif (( speed >= SPEED_SAM_MIN )); then
-        echo "SAM"    # Самолет
+        echo "SAM"
     else
         echo "UNKNOWN"
     fi
 }
 
-# --- Проверка: находится ли цель в зоне обнаружения (круговой) ---
 is_in_range() {
     local cx=$1 cy=$2 range=$3 tx=$4 ty=$5
     local dist
@@ -215,26 +196,20 @@ is_in_range() {
     (( dist <= range ))
 }
 
-# --- Проверка: находится ли цель в секторе РЛС ---
-# Углы в градусах, мат. конвенция (0=восток, CCW)
 is_in_sector() {
     local cx=$1 cy=$2 range=$3 center_angle=$4 sector_width=$5 tx=$6 ty=$7
 
-    # Проверка дальности
     local dist
     dist=$(calc_distance "$cx" "$cy" "$tx" "$ty")
     if (( dist > range )); then
         return 1
     fi
 
-    # Вычисление угла до цели
     local dx=$((tx - cx))
     local dy=$((ty - cy))
 
-    # atan2 через bc, результат в градусах
     local angle
     angle=$(echo "scale=4; a = 180 / 3.14159265358979 * a($dy, $dx); if (a < 0) a += 360; a" | bc -l 2>/dev/null)
-    # bc не поддерживает atan2, используем альтернативу
     angle=$(awk "BEGIN {
         pi = 3.14159265358979
         a = atan2($dy, $dx) * 180 / pi
@@ -242,7 +217,6 @@ is_in_sector() {
         printf \"%.0f\", a
     }")
 
-    # Проверка попадания в сектор
     local half=$((sector_width / 2))
     local min_angle=$(( (center_angle - half + 360) % 360 ))
     local max_angle=$(( (center_angle + half) % 360 ))
@@ -250,30 +224,24 @@ is_in_sector() {
     if (( min_angle <= max_angle )); then
         (( angle >= min_angle && angle <= max_angle ))
     else
-        # Сектор пересекает 0 градусов
         (( angle >= min_angle || angle <= max_angle ))
     fi
 }
 
-# --- Проверка: движется ли цель в направлении СПРО ---
 is_moving_toward_spro() {
     local x1=$1 y1=$2 x2=$3 y2=$4
     local spro_x=$SPRO_X spro_y=$SPRO_Y
 
-    # Вектор скорости
     local vx=$((x2 - x1))
     local vy=$((y2 - y1))
 
-    # Вектор от текущей позиции к СПРО
     local dx=$((spro_x - x2))
     local dy=$((spro_y - y2))
 
-    # Скалярное произведение: если > 0, цель движется в сторону СПРО
     local dot=$((vx * dx + vy * dy))
     (( dot > 0 ))
 }
 
-# --- Логирование ---
 log_message() {
     local logfile="$1"
     local system_name="$2"
@@ -284,7 +252,6 @@ log_message() {
 
     echo "$timestamp $system_name $message" >> "$logfile"
 
-    # Ротация лога
     local line_count
     line_count=$(wc -l < "$logfile" 2>/dev/null || echo 0)
     if (( line_count > MAX_LOG_LINES )); then
@@ -293,7 +260,6 @@ log_message() {
     fi
 }
 
-# --- Шифрование сообщения (base64 + HMAC) ---
 encrypt_message() {
     local message="$1"
     local encoded
@@ -303,7 +269,6 @@ encrypt_message() {
     echo "${encoded}|${hmac}"
 }
 
-# --- Дешифрование и проверка сообщения ---
 decrypt_message() {
     local encrypted="$1"
     local encoded="${encrypted%%|*}"
@@ -316,7 +281,6 @@ decrypt_message() {
         return 1
     fi
 
-    # Проверка HMAC
     local expected_hmac
     expected_hmac=$(echo -n "$decoded" | openssl dgst -sha256 -hmac "$HMAC_KEY" 2>/dev/null | awk '{print $NF}')
 
@@ -329,7 +293,6 @@ decrypt_message() {
     return 0
 }
 
-# --- Отправка сообщения на КП ---
 send_to_kp() {
     local system_name="$1"
     local message="$2"
@@ -341,7 +304,6 @@ send_to_kp() {
     echo "$encrypted" > "$msg_file"
 }
 
-# --- Отправка сообщения от КП к системе ---
 send_from_kp() {
     local target_system="$1"
     local message="$2"
@@ -353,7 +315,6 @@ send_from_kp() {
     echo "$encrypted" > "$msg_file"
 }
 
-# --- Отправка heartbeat ---
 send_heartbeat_response() {
     local system_name="$1"
     local encrypted
@@ -361,7 +322,6 @@ send_heartbeat_response() {
     echo "$encrypted" > "$MSG_DIR/heartbeat/${system_name}_response"
 }
 
-# --- Чтение координат из файла цели ---
 read_target_coords() {
     local filepath="$1"
     local content
@@ -369,7 +329,6 @@ read_target_coords() {
     if [[ -z "$content" ]]; then
         return 1
     fi
-    # Формат: X:  11059533    Y:   1893638
     local x y
     x=$(echo "$content" | awk -F'[:\t ]+' '{for(i=1;i<=NF;i++){if($i=="X")print $(i+1)}}')
     y=$(echo "$content" | awk -F'[:\t ]+' '{for(i=1;i<=NF;i++){if($i=="Y")print $(i+1)}}')
@@ -379,7 +338,6 @@ read_target_coords() {
     echo "$x $y"
 }
 
-# --- Получение самого свежего файла для данного ID цели ---
 get_latest_target_file() {
     local target_id="$1"
     local latest=""
@@ -401,7 +359,6 @@ get_latest_target_file() {
     echo "$latest"
 }
 
-# --- Получение mtime последней отметки цели в целом ---
 get_latest_target_mtime() {
     local target_id="$1"
     local latest_file
@@ -410,9 +367,6 @@ get_latest_target_mtime() {
     get_file_mtime "$latest_file"
 }
 
-# --- Получение mtime последней СВЕЖЕЙ отметки цели ---
-# Если в каталоге остались только старые файлы уже пропавшей/уничтоженной цели,
-# считаем, что актуальной отметки больше нет.
 get_latest_fresh_target_mtime() {
     local target_id="$1"
     local latest_mtime current_time
@@ -486,9 +440,6 @@ get_generator_result_since() {
     return 1
 }
 
-# --- Асинхронная проверка результата выстрела ---
-# Результат пишется в temp/shot_results, чтобы основной цикл системы только
-# снимал блокировку по цели и не зависел от длинного ожидания.
 track_shot_result_async() {
     local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" observed_mtime="$5" generator_log_start="${6:-0}"
     local result_dir="$TEMP_DIR/shot_results"
@@ -520,8 +471,6 @@ track_shot_result_async() {
             now_ms=$(current_time_ms)
 
             if (( now_ms >= failsafe_deadline_ms )); then
-                # Если генератор по какой-то причине так и не выдал результат,
-                # считаем выстрел неуспешным и разрешаем повторную попытку.
                 result="MISS"
                 break
             fi
@@ -544,8 +493,6 @@ get_file_mtime() {
     fi
 }
 
-# --- Получение всех текущих целей ---
-# Возвращает: ID X Y MTIME (по одной цели на строку)
 scan_targets() {
     declare -A latest_files
     declare -A latest_times
@@ -584,9 +531,6 @@ scan_targets() {
     done
 }
 
-# --- Получение самой свежей отметки конкретной цели ---
-# Возвращает: x y mtime. Не применяет фильтр TARGET_STALE_SECONDS:
-# используется для немедленного повторного пуска после промаха.
 get_latest_target_mark() {
     local target_id="$1"
     local latest_file="" latest_time=0
@@ -620,11 +564,6 @@ get_latest_target_mark() {
     echo "$coords $latest_time"
 }
 
-# --- Получение двух последних отметок конкретной цели ---
-# Текущая (самая новая) отметка должна быть в зоне/секторе системы,
-# предыдущая может быть вне зоны: это соответствует требованию
-# "уничтожение/определение типа на 2-й засечке", а не "две засечки внутри зоны".
-# Возвращает: prev_x prev_y prev_mtime curr_x curr_y curr_mtime
 get_latest_two_visible_marks() {
     local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
     local latest_file="" latest_time=0 prev_file="" prev_time=0
@@ -662,7 +601,6 @@ get_latest_two_visible_marks() {
     latest_coords=$(read_target_coords "$latest_file")
     [[ -z "$prev_coords" || -z "$latest_coords" ]] && return 1
 
-    # Подтверждаем, что вторая засечка (текущая отметка) уже находится в зоне системы.
     read -r tx ty <<< "$latest_coords"
     if [[ "$mode" == "sector" ]]; then
         is_in_sector "$cx" "$cy" "$range" "$angle" "$sector" "$tx" "$ty" || return 1
@@ -673,8 +611,6 @@ get_latest_two_visible_marks() {
     echo "$prev_coords $prev_time $latest_coords $latest_time"
 }
 
-# --- Получение последней видимой отметки цели ---
-# Возвращает: x y mtime
 get_latest_visible_mark() {
     local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
     local latest_file="" latest_time=0
@@ -711,14 +647,12 @@ get_latest_visible_mark() {
     echo "$coords $latest_time"
 }
 
-# --- Вставка записи в БД ---
 db_insert() {
     local db_file="$DB_DIR/vko.db"
     local sql="$1"
     sqlite3 "$db_file" "$sql" 2>/dev/null
 }
 
-# --- Инициализация БД ---
 init_database() {
     local db_file="$DB_DIR/vko.db"
     sqlite3 "$db_file" <<'EOSQL'

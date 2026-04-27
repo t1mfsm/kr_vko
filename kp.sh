@@ -1,6 +1,4 @@
 #!/bin/bash
-# Скрипт работы КП ВКО (Командный пункт)
-# Использование: ./kp.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
@@ -13,22 +11,19 @@ LOGFILE="$LOG_DIR/KP_VKO.log"
 SYSTEM_LOG="$LOG_DIR/system_journal.log"
 DB_FILE="$DB_DIR/vko.db"
 
-# Инициализация БД
 init_database
 
 echo "[КП ВКО] Запуск командного пункта ВКО"
 log_message "$LOGFILE" "KP_VKO" "Запуск КП ВКО"
 log_message "$SYSTEM_LOG" "KP_VKO" "=== Система ВКО запущена ==="
 
-# Список всех систем для мониторинга
 ALL_SYSTEMS=("$RLS1_NAME" "$RLS2_NAME" "$RLS3_NAME" "$ZRDN1_NAME" "$ZRDN2_NAME" "$ZRDN3_NAME" "$SPRO_NAME")
 
-declare -A system_status        # имя -> ONLINE/OFFLINE
-declare -A last_heartbeat       # имя -> timestamp
-declare -A missed_heartbeats    # имя -> количество подряд пропусков heartbeat
-declare -A reported_status      # имя_статус -> 1 (для недопущения дублирования)
+declare -A system_status
+declare -A last_heartbeat
+declare -A missed_heartbeats
+declare -A reported_status
 
-# Инициализация статусов
 for sys in "${ALL_SYSTEMS[@]}"; do
     system_status[$sys]="UNKNOWN"
     last_heartbeat[$sys]=0
@@ -239,13 +234,11 @@ while true; do
 
     process_kp_messages
 
-    # --- Проверка работоспособности систем (heartbeat) ---
     if (( current_time - last_heartbeat_check >= HEARTBEAT_INTERVAL )); then
         heartbeat_deadline=$((current_time + HEARTBEAT_RESPONSE_TIMEOUT))
         last_heartbeat_check=$current_time
 
         for sys in "${ALL_SYSTEMS[@]}"; do
-            # Отправить запрос heartbeat
             touch "$MSG_DIR/heartbeat/${sys}_request"
         done
 
@@ -288,7 +281,6 @@ while true; do
                     fi
                 fi
             else
-                # Нет ответа
                 (( missed_heartbeats[$sys]++ ))
                 if (( missed_heartbeats[$sys] < HEARTBEAT_MISSES_BEFORE_OFFLINE )); then
                     continue

@@ -1,7 +1,4 @@
 #!/bin/bash
-# Скрипт остановки всех элементов системы ВКО
-# Использование: ./stop.sh [компонент]
-# Без аргументов - остановка всех систем
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
@@ -31,7 +28,6 @@ stop_component() {
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
             sleep 0.5
-            # Если процесс не завершился, принудительно
             if kill -0 "$pid" 2>/dev/null; then
                 kill -9 "$pid" 2>/dev/null
             fi
@@ -50,7 +46,6 @@ stop_by_name() {
     case "$component" in
         gen|generator)
             stop_component "GenTargets"
-            # Дополнительно ищем процесс GenTargets.sh
             pkill -f "GenTargets.sh" 2>/dev/null
             echo "[-] Генератор целей остановлен"
             ;;
@@ -80,7 +75,6 @@ else
     echo "========================================="
     echo ""
 
-    # Остановка в обратном порядке
     stop_component "$ZRDN3_NAME"
     stop_component "$ZRDN2_NAME"
     stop_component "$ZRDN1_NAME"
@@ -90,11 +84,9 @@ else
     stop_component "$RLS1_NAME"
     stop_component "KP_VKO"
 
-    # Остановка генератора
     stop_component "GenTargets"
     pkill -f "GenTargets.sh" 2>/dev/null
 
-    # Очистка сообщений
     rm -f "$MSG_DIR/to_kp/"* 2>/dev/null
     rm -f "$MSG_DIR/from_kp/"* 2>/dev/null
     rm -f "$MSG_DIR/heartbeat/"* 2>/dev/null
