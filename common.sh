@@ -590,12 +590,19 @@ scan_targets() {
 get_latest_target_mark() {
     local target_id="$1"
     local latest_file="" latest_time=0
-    local f decoded_id ftime coords
+    local f ftime coords hex_id pattern i
 
-    for f in "$TARGETS_DIR"/*; do
+    hex_id=$(printf '%s' "$target_id" | xxd -p | tr -d '\n')
+    [[ -n "$hex_id" ]] || return 1
+
+    pattern=""
+    for ((i = 0; i < ${#hex_id}; i += 2)); do
+        pattern+="??${hex_id:$i:2}"
+    done
+    pattern+="??"
+
+    for f in "$TARGETS_DIR"/$pattern; do
         [[ -f "$f" ]] || continue
-        decoded_id=$(decode_target_id "$f")
-        [[ "$decoded_id" != "$target_id" ]] && continue
 
         coords=$(read_target_coords "$f")
         [[ -z "$coords" ]] && continue

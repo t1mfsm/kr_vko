@@ -199,6 +199,7 @@ while true; do
                 shot_pending[$target_id]=0
                 shot_seen_after[$target_id]=0
                 refire_after_miss "$target_id"
+                continue
             else
                 if [[ "$tx" != "${shot_x[$target_id]:-}" || "$ty" != "${shot_y[$target_id]:-}" ]]; then
                     if [[ "${shot_seen_after[$target_id]:-0}" -eq 0 ]]; then
