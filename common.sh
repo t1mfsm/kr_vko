@@ -584,6 +584,35 @@ scan_targets() {
     done
 }
 
+# --- Получение самой свежей отметки конкретной цели ---
+# Возвращает: x y mtime. Не применяет фильтр TARGET_STALE_SECONDS:
+# используется для немедленного повторного пуска после промаха.
+get_latest_target_mark() {
+    local target_id="$1"
+    local latest_file="" latest_time=0
+    local f decoded_id ftime coords
+
+    for f in "$TARGETS_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        decoded_id=$(decode_target_id "$f")
+        [[ "$decoded_id" != "$target_id" ]] && continue
+
+        coords=$(read_target_coords "$f")
+        [[ -z "$coords" ]] && continue
+
+        ftime=$(get_file_mtime "$f")
+        if (( ftime > latest_time )); then
+            latest_time=$ftime
+            latest_file="$f"
+        fi
+    done
+
+    [[ -n "$latest_file" ]] || return 1
+    coords=$(read_target_coords "$latest_file")
+    [[ -n "$coords" ]] || return 1
+    echo "$coords $latest_time"
+}
+
 # --- Получение двух последних отметок конкретной цели ---
 # Текущая (самая новая) отметка должна быть в зоне/секторе системы,
 # предыдущая может быть вне зоны: это соответствует требованию

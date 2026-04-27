@@ -106,6 +106,24 @@ fire_target() {
     fi
 }
 
+refire_after_miss() {
+    local target_id="$1"
+    local latest tx ty _mtime
+
+    (( AMMO > 0 )) || return 1
+
+    latest=$(get_latest_target_mark "$target_id" 2>/dev/null || true)
+    [[ -n "$latest" ]] || return 1
+    read -r tx ty _mtime <<< "$latest"
+
+    is_in_range "$SPRO_X" "$SPRO_Y" "$SPRO_RANGE" "$tx" "$ty" || return 1
+
+    last_x[$target_id]="$tx"
+    last_y[$target_id]="$ty"
+    last_seen_epoch[$target_id]="$(date +%s)"
+    fire_target "$target_id" "$tx" "$ty"
+}
+
 while true; do
     now_epoch=$(date +%s)
 
@@ -167,6 +185,7 @@ while true; do
                 echo "[$SPRO_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
                 shot_pending[$target_id]=0
                 shot_seen_after[$target_id]=0
+                refire_after_miss "$target_id"
             else
                 if [[ "$tx" != "${shot_x[$target_id]:-}" || "$ty" != "${shot_y[$target_id]:-}" ]]; then
                     if [[ "${shot_seen_after[$target_id]:-0}" -eq 0 ]]; then
@@ -179,6 +198,7 @@ while true; do
                         echo "[$SPRO_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
                         shot_pending[$target_id]=0
                         shot_seen_after[$target_id]=0
+                        refire_after_miss "$target_id"
                     fi
                 fi
                 continue
@@ -231,9 +251,7 @@ while true; do
                 echo "[$SPRO_NAME] ПРОМАХ по цели id:$target_id после пуска №${shot_no[$target_id]:-1}"
                 shot_pending[$target_id]=0
                 shot_seen_after[$target_id]=0
-                if (( AMMO > 0 )) && [[ -n "${last_x[$target_id]:-}" && -n "${last_y[$target_id]:-}" ]]; then
-                    fire_target "$target_id" "${last_x[$target_id]}" "${last_y[$target_id]}"
-                fi
+                refire_after_miss "$target_id"
                 continue
             fi
             mark_target_destroyed "$target_id" "$SPRO_NAME"
