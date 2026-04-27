@@ -57,6 +57,7 @@ cleanup_stale_targets() {
     for target_id in "${!last_seen_epoch[@]}"; do
         last="${last_seen_epoch[$target_id]}"
         if (( now_epoch - last > STATE_TTL_SEC )); then
+            release_target_engagement "$target_id" "$ZRDN_NAME" 2>/dev/null || true
             unset "last_seen_epoch[$target_id]"
             unset "first_x[$target_id]"
             unset "first_y[$target_id]"
@@ -185,6 +186,7 @@ while true; do
             generator_result=$(get_generator_result_since "${shot_generator_log_start[$target_id]:-0}" "$target_id" "$ZRDN_NAME" 2>/dev/null || true)
             if [[ "$generator_result" == "DESTROYED" ]]; then
                 mark_target_destroyed "$target_id" "$ZRDN_NAME"
+                release_target_engagement "$target_id" "$ZRDN_NAME" 2>/dev/null || true
                 log_message "$LOGFILE" "$ZRDN_NAME" "Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
                 send_to_kp "$ZRDN_NAME" "DESTROYED $target_id ${target_type[$target_id]:-UNKNOWN}"
                 echo "[$ZRDN_NAME] Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
@@ -247,8 +249,11 @@ while true; do
         fi
 
         if [[ "${detected_sent[$target_id]:-0}" -eq 0 ]]; then
+            claim_target_engagement "$target_id" "$ZRDN_NAME" || continue
             send_detect "$target_id" "$tx" "$ty" "${target_type[$target_id]}" "$speed"
             detected_sent[$target_id]=1
+        elif ! refresh_target_engagement "$target_id" "$ZRDN_NAME"; then
+            claim_target_engagement "$target_id" "$ZRDN_NAME" || continue
         fi
 
         (( AMMO > 0 )) || continue
@@ -269,6 +274,7 @@ while true; do
                 continue
             fi
             mark_target_destroyed "$target_id" "$ZRDN_NAME"
+            release_target_engagement "$target_id" "$ZRDN_NAME" 2>/dev/null || true
             log_message "$LOGFILE" "$ZRDN_NAME" "Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
             send_to_kp "$ZRDN_NAME" "DESTROYED $target_id ${target_type[$target_id]:-UNKNOWN}"
             echo "[$ZRDN_NAME] Цель id:$target_id УНИЧТОЖЕНА после пуска №${shot_no[$target_id]:-1}"
