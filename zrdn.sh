@@ -131,8 +131,6 @@ refire_after_miss() {
     [[ -n "$latest" ]] || return 1
     read -r tx ty _mtime <<< "$latest"
 
-    is_in_range "$ZRDN_X" "$ZRDN_Y" "$ZRDN_RANGE" "$tx" "$ty" || return 1
-
     last_x[$target_id]="$tx"
     last_y[$target_id]="$ty"
     last_seen_epoch[$target_id]="$(date +%s)"
