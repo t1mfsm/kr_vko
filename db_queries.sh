@@ -16,7 +16,7 @@ echo "  Статистика работы системы ВКО"
 echo "========================================="
 echo ""
 
-echo "1. Остаток боеприпасов у ЗРДН и СПРО"
+echo "--- 1. Остаток боеприпасов у ЗРДН и СПРО ---"
 sqlite3 -header -column "$DB_FILE" "
 WITH ammo_limits AS (
     SELECT '$SPRO_NAME' AS system_name, $SPRO_AMMO AS max_ammo
@@ -52,7 +52,7 @@ ORDER BY ammo_limits.system_name;
 "
 echo ""
 
-echo "2. Количество уничтоженных целей по системам"
+echo "--- 2. Количество уничтоженных целей по системам ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
        COUNT(*) AS 'Уничтожено'
@@ -63,7 +63,7 @@ ORDER BY COUNT(*) DESC;
 "
 echo ""
 
-echo "3. Самая результативная система"
+echo "--- 3. Самая результативная система ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
        COUNT(*) AS 'Уничтожено'
@@ -75,7 +75,7 @@ LIMIT 1;
 "
 echo ""
 
-echo "4. Самая меткая система (процент попаданий)"
+echo "--- 4. Самая меткая система (процент попаданий) ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
        SUM(CASE WHEN result='DESTROYED' THEN 1 ELSE 0 END) AS 'Попадания',
@@ -88,7 +88,7 @@ ORDER BY ROUND(100.0 * SUM(CASE WHEN result='DESTROYED' THEN 1 ELSE 0 END) / COU
 "
 echo ""
 
-echo "5. Последние обнаруженные цели"
+echo "--- 5. Последние обнаруженные цели ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
        target_id AS 'ID_цели',
@@ -103,7 +103,7 @@ LIMIT 20;
 "
 echo ""
 
-echo "6. Цели, двигавшиеся в направлении СПРО"
+echo "--- 6. Цели, двигавшиеся в направлении СПРО ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Обнаружено',
        target_id AS 'ID_цели',
@@ -116,7 +116,7 @@ ORDER BY id DESC;
 "
 echo ""
 
-echo "7. Промахи"
+echo "--- 7. Промахи ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
        target_id AS 'ID_цели',
@@ -129,7 +129,7 @@ LIMIT 20;
 "
 echo ""
 
-echo "8. Попытки несанкционированного доступа"
+echo "--- 8. Попытки несанкционированного доступа ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
        details AS 'Детали',
@@ -140,7 +140,7 @@ LIMIT 10;
 "
 echo ""
 
-echo "9. Общая статистика"
+echo "--- 9. Общая статистика ---"
 echo -n "Всего событий в журнале: "
 sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM journal;"
 echo -n "Всего выстрелов: "
@@ -153,7 +153,7 @@ echo -n "Попыток НСД: "
 sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM nsd_log;"
 echo ""
 
-echo "10. Уничтожено ЗРДН за последний час"
+echo "--- 10. Уничтожено ЗРДН за последний час ---"
 sqlite3 -header -column "$DB_FILE" "
 SELECT system_name AS 'Система',
        COUNT(*) AS 'Уничтожено_за_час'

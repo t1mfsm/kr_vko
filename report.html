@@ -1,0 +1,297 @@
+<p style="text-align: center;">Оглавление</p>
+<ol>
+  <li style="text-align: left;">Постановка задачи</li>
+  <li style="text-align: left;">Заданный вариант</li>
+  <li style="text-align: left;">Алгоритмы работы</li>
+  <li style="text-align: left;">Топографическая карта с нанесенными зонами и параметрами работы комплексов ВКО</li>
+  <li style="text-align: left;">Отрывки журналов работы</li>
+  <li style="text-align: left;">Вывод</li>
+</ol>
+
+<p style="text-align: left;"></p>
+<p style="text-align: center;">Постановка задачи</p>
+<p style="text-align: left;">
+  Цель работы: разработать и исследовать программную модель системы воздушно-космической обороны,
+  обеспечивающую обнаружение, классификацию, сопровождение и поражение воздушных и баллистических целей
+  в заданной зоне ответственности.
+</p>
+<p style="text-align: left;">
+  В рамках проекта реализована имитационная система ВКО, состоящая из генератора целей, командного пункта,
+  радиолокационных станций, зенитных ракетных дивизионов и комплекса СПРО. Система работает в среде Linux
+  с использованием Bash-скриптов, файлового обмена сообщениями, журналирования и базы данных SQLite.
+</p>
+<p style="text-align: left;">
+  Основные задачи системы:
+</p>
+<ul>
+  <li style="text-align: left;">генерация целей различных типов: баллистический блок, самолет, крылатая ракета;</li>
+  <li style="text-align: left;">обнаружение целей радиолокационными средствами в пределах заданных дальностей и секторов обзора;</li>
+  <li style="text-align: left;">определение типа цели по скорости движения;</li>
+  <li style="text-align: left;">передача сообщений на командный пункт ВКО;</li>
+  <li style="text-align: left;">поражение целей средствами ЗРДН и СПРО;</li>
+  <li style="text-align: left;">ведение журналов обнаружения, стрельбы, промахов, уничтожения целей и состояния комплексов;</li>
+  <li style="text-align: left;">контроль работоспособности элементов системы через heartbeat-сообщения;</li>
+  <li style="text-align: left;">контроль целостности сообщений с использованием HMAC.</li>
+</ul>
+
+<p style="text-align: left;"></p>
+<p style="text-align: center;">Заданный вариант</p>
+<p style="text-align: left;">
+  Заданный вариант соответствует текущей конфигурации проекта. Район моделирования имеет размеры
+  13 000 000 м по оси X и 9 000 000 м по оси Y. Генератор целей создает до 50 целей одновременно.
+  Вероятность поражения цели при пуске составляет 70%.
+</p>
+<table border="1" cellspacing="0" cellpadding="5" style="border-collapse: collapse; width: 100%;">
+  <tr>
+    <th style="text-align: center;">Комплекс</th>
+    <th style="text-align: center;">Тип</th>
+    <th style="text-align: center;">Координаты</th>
+    <th style="text-align: center;">Дальность / радиус</th>
+    <th style="text-align: center;">Сектор / направление</th>
+    <th style="text-align: center;">Боекомплект</th>
+  </tr>
+  <tr>
+    <td style="text-align: left;">RLS1_Daryal_Minsk</td>
+    <td style="text-align: left;">РЛС Daryal</td>
+    <td style="text-align: left;">X=2500000, Y=3900000</td>
+    <td style="text-align: left;">6000000 м</td>
+    <td style="text-align: left;">сектор 90°, направление 135°</td>
+    <td style="text-align: left;">-</td>
+  </tr>
+  <tr>
+    <td style="text-align: left;">RLS2_Dnepr</td>
+    <td style="text-align: left;">РЛС Dnepr</td>
+    <td style="text-align: left;">X=7000000, Y=3000000</td>
+    <td style="text-align: left;">3500000 м</td>
+    <td style="text-align: left;">сектор 120°, направление 45°</td>
+    <td style="text-align: left;">-</td>
+  </tr>
+  <tr>
+    <td style="text-align: left;">RLS3_Voronezh_Kazan</td>
+    <td style="text-align: left;">РЛС Voronezh-DM</td>
+    <td style="text-align: left;">X=4300000, Y=3200000</td>
+    <td style="text-align: left;">4000000 м</td>
+    <td style="text-align: left;">сектор 200°, направление 225°</td>
+    <td style="text-align: left;">-</td>
+  </tr>
+  <tr>
+    <td style="text-align: left;">ZRDN1_Crimea</td>
+    <td style="text-align: left;">ЗРДН</td>
+    <td style="text-align: left;">X=2700000, Y=2550000</td>
+    <td style="text-align: left;">650000 м</td>
+    <td style="text-align: left;">круговая зона</td>
+    <td style="text-align: left;">20 ракет</td>
+  </tr>
+  <tr>
+    <td style="text-align: left;">ZRDN2_Petrozavodsk</td>
+    <td style="text-align: left;">ЗРДН</td>
+    <td style="text-align: left;">X=2800000, Y=4700000</td>
+    <td style="text-align: left;">400000 м</td>
+    <td style="text-align: left;">круговая зона</td>
+    <td style="text-align: left;">20 ракет</td>
+  </tr>
+  <tr>
+    <td style="text-align: left;">ZRDN3_Ufa</td>
+    <td style="text-align: left;">ЗРДН</td>
+    <td style="text-align: left;">X=4500000, Y=3400000</td>
+    <td style="text-align: left;">550000 м</td>
+    <td style="text-align: left;">круговая зона</td>
+    <td style="text-align: left;">20 ракет</td>
+  </tr>
+  <tr>
+    <td style="text-align: left;">SPRO_Novosibirsk</td>
+    <td style="text-align: left;">СПРО</td>
+    <td style="text-align: left;">X=6100000, Y=3300000</td>
+    <td style="text-align: left;">800000 м</td>
+    <td style="text-align: left;">круговая зона</td>
+    <td style="text-align: left;">10 противоракет</td>
+  </tr>
+</table>
+<p style="text-align: left;">
+  Классификация целей выполняется по скорости: BB_BR от 8000 м/с, KR от 250 до 1000 м/с,
+  SAM от 50 до 249 м/с.
+</p>
+
+<p style="text-align: left;"></p>
+<p style="text-align: center;">Алгоритмы работы</p>
+<p style="text-align: left;">
+  Алгоритм генератора целей:
+</p>
+<ol>
+  <li style="text-align: left;">Генератор создает цель случайного типа: баллистический блок, самолет или крылатая ракета.</li>
+  <li style="text-align: left;">Для цели задаются начальные координаты, скорость, направление движения и время жизни.</li>
+  <li style="text-align: left;">Каждый цикл координаты цели обновляются, а новая отметка записывается в каталог целей.</li>
+  <li style="text-align: left;">При получении команды на уничтожение генератор с вероятностью 70% фиксирует уничтожение, иначе фиксирует промах.</li>
+  <li style="text-align: left;">После истечения времени жизни цель удаляется как пропавшая.</li>
+</ol>
+<p style="text-align: left;">
+  Алгоритм работы РЛС:
+</p>
+<ol>
+  <li style="text-align: left;">РЛС сканирует актуальные отметки целей.</li>
+  <li style="text-align: left;">Проверяется попадание цели в дальность и сектор обзора станции.</li>
+  <li style="text-align: left;">По двум последним отметкам вычисляется скорость цели.</li>
+  <li style="text-align: left;">РЛС передает на КП сообщения только о баллистических целях BB_BR.</li>
+  <li style="text-align: left;">Если баллистическая цель движется в направлении СПРО, дополнительно формируется предупреждение SPRO_ALERT.</li>
+</ol>
+<p style="text-align: left;">
+  Алгоритм работы ЗРДН:
+</p>
+<ol>
+  <li style="text-align: left;">ЗРДН отслеживает цели в пределах своего радиуса поражения.</li>
+  <li style="text-align: left;">По скорости цель классифицируется как SAM или KR.</li>
+  <li style="text-align: left;">Для исключения одновременной стрельбы разными комплексами цель захватывается через механизм блокировки.</li>
+  <li style="text-align: left;">При наличии боекомплекта выполняется пуск ракеты и отправляется сообщение SHOT на КП.</li>
+  <li style="text-align: left;">После промаха выполняется повторный пуск, после уничтожения цель помечается как уничтоженная.</li>
+  <li style="text-align: left;">При исчерпании боекомплекта комплекс переходит в режим обнаружения и затем пополняет боекомплект.</li>
+</ol>
+<p style="text-align: left;">
+  Алгоритм работы СПРО:
+</p>
+<ol>
+  <li style="text-align: left;">СПРО обрабатывает только баллистические цели BB_BR.</li>
+  <li style="text-align: left;">Цель проверяется на попадание в радиус поражения 800000 м.</li>
+  <li style="text-align: left;">При захвате цели СПРО производит пуск противоракеты.</li>
+  <li style="text-align: left;">Результат пуска определяется по журналу генератора: уничтожение или промах.</li>
+  <li style="text-align: left;">При промахе СПРО выполняет повторный пуск, если боекомплект не исчерпан.</li>
+</ol>
+<p style="text-align: left;">
+  Алгоритм работы командного пункта:
+</p>
+<ol>
+  <li style="text-align: left;">КП принимает зашифрованные сообщения от всех комплексов.</li>
+  <li style="text-align: left;">Каждое сообщение проверяется по HMAC; при ошибке фиксируется попытка НСД.</li>
+  <li style="text-align: left;">КП регистрирует события DETECT, SHOT, MISS, DESTROYED, REFILL, AMMO_EMPTY и SPRO_ALERT.</li>
+  <li style="text-align: left;">События записываются в общий журнал и в таблицы базы данных SQLite.</li>
+  <li style="text-align: left;">Периодически КП отправляет heartbeat-запросы и фиксирует потерю или восстановление связи.</li>
+</ol>
+
+<p style="text-align: left;"></p>
+<p style="text-align: center;">Топографическая карта с нанесенными зонами и параметрами работы комплексов ВКО</p>
+<p style="text-align: left;">
+  Ниже приведена условная топографическая схема района моделирования. Масштаб карты: X от 0 до 13000000 м,
+  Y от 0 до 9000000 м. РЛС показаны с секторами обзора, ЗРДН и СПРО - круговыми зонами поражения.
+</p>
+<div style="text-align: center;">
+  <svg width="900" height="620" viewBox="0 0 900 620" xmlns="http://www.w3.org/2000/svg">
+    <rect x="60" y="40" width="780" height="540" fill="#f7f7f7" stroke="#222" stroke-width="2"/>
+    <line x1="60" y1="580" x2="840" y2="580" stroke="#222" stroke-width="2"/>
+    <line x1="60" y1="580" x2="60" y2="40" stroke="#222" stroke-width="2"/>
+    <text x="430" y="610" font-size="14" text-anchor="middle">Ось X, м</text>
+    <text x="20" y="315" font-size="14" text-anchor="middle" transform="rotate(-90 20 315)">Ось Y, м</text>
+    <text x="60" y="598" font-size="11" text-anchor="middle">0</text>
+    <text x="840" y="598" font-size="11" text-anchor="middle">13000000</text>
+    <text x="42" y="584" font-size="11" text-anchor="end">0</text>
+    <text x="42" y="44" font-size="11" text-anchor="end">9000000</text>
+
+    <circle cx="210" cy="346" r="390" fill="rgba(80,130,220,0.10)" stroke="#3465d9" stroke-width="2" stroke-dasharray="8 5"/>
+    <path d="M210 346 L486 70 A390 390 0 0 1 486 622 Z" fill="rgba(80,130,220,0.13)" stroke="#3465d9" stroke-width="2"/>
+    <circle cx="210" cy="346" r="5" fill="#173f9f"/>
+    <text x="218" y="337" font-size="13">RLS1 Daryal Minsk</text>
+
+    <circle cx="480" cy="400" r="210" fill="rgba(50,160,110,0.10)" stroke="#16834f" stroke-width="2" stroke-dasharray="8 5"/>
+    <path d="M480 400 L585 218 A210 210 0 0 1 662 295 Z" fill="rgba(50,160,110,0.16)" stroke="#16834f" stroke-width="2"/>
+    <circle cx="480" cy="400" r="5" fill="#0b6f3a"/>
+    <text x="488" y="391" font-size="13">RLS2 Dnepr</text>
+
+    <circle cx="318" cy="388" r="240" fill="rgba(220,140,50,0.10)" stroke="#c56e13" stroke-width="2" stroke-dasharray="8 5"/>
+    <path d="M318 388 L154 213 A240 240 0 0 1 482 563 Z" fill="rgba(220,140,50,0.16)" stroke="#c56e13" stroke-width="2"/>
+    <circle cx="318" cy="388" r="5" fill="#a95b08"/>
+    <text x="326" y="379" font-size="13">RLS3 Voronezh-DM Kazan</text>
+
+    <circle cx="222" cy="427" r="39" fill="rgba(210,30,70,0.16)" stroke="#b41535" stroke-width="2"/>
+    <circle cx="222" cy="427" r="5" fill="#b41535"/>
+    <text x="230" y="449" font-size="13">ZRDN1 Crimea, R=650 км</text>
+
+    <circle cx="228" cy="298" r="24" fill="rgba(210,30,70,0.16)" stroke="#b41535" stroke-width="2"/>
+    <circle cx="228" cy="298" r="5" fill="#b41535"/>
+    <text x="236" y="289" font-size="13">ZRDN2 Petrozavodsk, R=400 км</text>
+
+    <circle cx="330" cy="376" r="33" fill="rgba(210,30,70,0.16)" stroke="#b41535" stroke-width="2"/>
+    <circle cx="330" cy="376" r="5" fill="#b41535"/>
+    <text x="338" y="367" font-size="13">ZRDN3 Ufa, R=550 км</text>
+
+    <circle cx="426" cy="382" r="48" fill="rgba(120,40,160,0.16)" stroke="#6e238e" stroke-width="2"/>
+    <circle cx="426" cy="382" r="5" fill="#6e238e"/>
+    <text x="434" y="373" font-size="13">SPRO Novosibirsk, R=800 км</text>
+
+    <circle cx="469" cy="363" r="4" fill="#000"/>
+    <text x="477" y="358" font-size="12">цель 9e6d1bb</text>
+    <line x1="510" y1="337" x2="469" y2="363" stroke="#000" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <circle cx="334" cy="371" r="4" fill="#000"/>
+    <text x="342" y="396" font-size="12">цель bb39f6r</text>
+
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L6,3 z" fill="#000"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+<p style="text-align: left;">
+  На схеме дополнительно отмечены примеры целей из журналов: баллистическая цель 9e6d1bb,
+  пораженная СПРО, и крылатая ракета bb39f6r, пораженная ЗРДН3 после нескольких пусков.
+</p>
+
+<p style="text-align: left;"></p>
+<p style="text-align: center;">Отрывки журналов работы</p>
+<p style="text-align: left;">Фрагмент общего журнала system_journal.log:</p>
+<pre style="text-align: left; white-space: pre-wrap;">
+27.04 22:49:13:679 ZRDN3_Ufa Обнаружена цель id:bb39f6r координаты X:4565968 Y:3448504 тип:KR скорость:970
+27.04 22:49:13:821 ZRDN3_Ufa Стрельба по цели id:bb39f6r тип:KR AMMO:15
+27.04 22:49:17:830 ZRDN3_Ufa ПРОМАХ по цели id:bb39f6r (KR)
+27.04 22:49:17:970 ZRDN3_Ufa Стрельба по цели id:bb39f6r тип:KR AMMO:14
+27.04 22:49:21:697 ZRDN3_Ufa ПРОМАХ по цели id:bb39f6r (KR)
+27.04 22:49:22:343 ZRDN3_Ufa Стрельба по цели id:bb39f6r тип:KR AMMO:13
+27.04 22:49:25:032 ZRDN3_Ufa Цель id:bb39f6r УНИЧТОЖЕНА (KR)
+</pre>
+<p style="text-align: left;">Фрагмент журнала СПРО:</p>
+<pre style="text-align: left; white-space: pre-wrap;">
+27.04 22:49:51:396 SPRO_Novosibirsk Обнаружена цель id:9e6d1bb координаты 6820608 3624811 тип:BB_BR скорость:8942
+27.04 22:49:51:445 SPRO_Novosibirsk Стрельба по цели id:9e6d1bb тип:BB_BR пуск №1. Осталось противоракет: 7
+27.04 22:49:55:477 SPRO_Novosibirsk Цель id:9e6d1bb УНИЧТОЖЕНА после пуска №1
+27.04 22:50:22:764 SPRO_Novosibirsk Обнаружена цель id:bb1474b координаты 6882958 3185506 тип:BB_BR скорость:9044
+27.04 22:50:22:840 SPRO_Novosibirsk Стрельба по цели id:bb1474b тип:BB_BR пуск №1. Осталось противоракет: 6
+27.04 22:50:26:703 SPRO_Novosibirsk ПРОМАХ по цели id:bb1474b после пуска №1
+27.04 22:50:27:576 SPRO_Novosibirsk Стрельба по цели id:bb1474b тип:BB_BR пуск №2. Осталось противоракет: 5
+27.04 22:50:31:472 SPRO_Novosibirsk Цель id:bb1474b УНИЧТОЖЕНА после пуска №2
+</pre>
+<p style="text-align: left;">Фрагмент журнала командного пункта:</p>
+<pre style="text-align: left; white-space: pre-wrap;">
+27.04 22:49:56:180 KP_VKO RLS2_Dnepr НЕ ОТВЕЧАЕТ! Связь потеряна
+27.04 22:50:23:217 KP_VKO от SPRO_Novosibirsk: Обнаружена цель id:bb1474b координаты X:6882958 Y:3185506 тип:BB_BR скорость:9044
+27.04 22:50:23:351 KP_VKO от SPRO_Novosibirsk: Стрельба по цели id:bb1474b тип:BB_BR AMMO:6
+27.04 22:50:26:195 KP_VKO RLS2_Dnepr работоспособность восстановлена
+27.04 22:50:27:012 KP_VKO от SPRO_Novosibirsk: ПРОМАХ по цели id:bb1474b (BB_BR)
+27.04 22:50:31:941 KP_VKO от SPRO_Novosibirsk: Цель id:bb1474b УНИЧТОЖЕНА (BB_BR)
+</pre>
+<p style="text-align: left;">Фрагмент журнала ЗРДН3:</p>
+<pre style="text-align: left; white-space: pre-wrap;">
+27.04 22:49:13:423 ZRDN3_Ufa Обнаружена цель id:bb39f6r координаты 4565968 3448504 тип:KR скорость:970
+27.04 22:49:13:477 ZRDN3_Ufa Стрельба по цели id:bb39f6r тип:KR пуск №1. Осталось ракет: 15
+27.04 22:49:16:952 ZRDN3_Ufa ПРОМАХ по цели id:bb39f6r после пуска №1
+27.04 22:49:17:232 ZRDN3_Ufa Стрельба по цели id:bb39f6r тип:KR пуск №2. Осталось ракет: 14
+27.04 22:49:21:183 ZRDN3_Ufa ПРОМАХ по цели id:bb39f6r после пуска №2
+27.04 22:49:21:597 ZRDN3_Ufa Стрельба по цели id:bb39f6r тип:KR пуск №3. Осталось ракет: 13
+27.04 22:49:24:635 ZRDN3_Ufa Цель id:bb39f6r УНИЧТОЖЕНА после пуска №3
+</pre>
+
+<p style="text-align: left;"></p>
+<p style="text-align: center;">Вывод</p>
+<p style="text-align: left;">
+  В ходе работы была реализована имитационная модель системы ВКО, включающая генератор целей,
+  командный пункт, три РЛС, три ЗРДН и комплекс СПРО. Система обеспечивает обнаружение целей,
+  классификацию по скорости, передачу сообщений на КП, ведение журналов, контроль связи и поражение целей.
+</p>
+<p style="text-align: left;">
+  По журналам работы видно, что комплексы корректно обнаруживают цели в своих зонах ответственности,
+  выполняют пуски, фиксируют промахи и повторные пуски, а также регистрируют успешное уничтожение целей.
+  Командный пункт принимает сообщения от всех элементов системы, фиксирует состояние связи и записывает
+  события в общий журнал и базу данных.
+</p>
+<p style="text-align: left;">
+  Разработанная система позволяет наглядно оценивать взаимодействие элементов ВКО и может использоваться
+  для проверки алгоритмов обнаружения, сопровождения, распределения целей и имитации боевой работы
+  комплексов противовоздушной и противоракетной обороны.
+</p>
