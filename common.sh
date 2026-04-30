@@ -7,12 +7,10 @@ check_environment() {
         echo "ОШИБКА: Запуск от имени root запрещен!" >&2
         exit 1
     fi
-
     if [[ "$(uname -s)" != "Linux" ]]; then
         echo "ОШИБКА: Запуск разрешен только в Linux. Текущая ОС: $(uname -s)" >&2
         exit 1
     fi
-
     if [[ -z "$BASH_VERSION" ]]; then
         echo "ОШИБКА: Требуется интерпретатор Bash!" >&2
         exit 1
@@ -44,6 +42,104 @@ cleanup() {
     rm -f "$PID_DIR/${name}.pid"
 }
 
+mark_target_destroyed() {
+    local target_id="$1" system_name="$2"
+    mkdir -p "$DESTROYED_TARGETS_DIR"
+    printf "%s\n" "$system_name" > "$DESTROYED_TARGETS_DIR/$target_id"
+}
+
+get_target_destroyed_by() {
+    local target_id="$1"
+    local marker_file="$DESTROYED_TARGETS_DIR/$target_id"
+    [[ -f "$marker_file" ]] || return 1
+    cat "$marker_file" 2>/dev/null
+}
+
+is_target_destroyed() {
+    local target_id="$1"
+    [[ -f "$DESTROYED_TARGETS_DIR/$target_id" ]]
+}
+
+ENGAGEMENT_DIR="$TEMP_DIR/engagements"
+
+get_engagement_owner() {
+    local target_id="$1"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    [[ -f "$lock_dir/owner" ]] || return 1
+    cat "$lock_dir/owner" 2>/dev/null
+}
+
+get_engagement_pid() {
+    local target_id="$1"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    [[ -f "$lock_dir/pid" ]] || return 1
+    cat "$lock_dir/pid" 2>/dev/null
+}
+
+refresh_target_engagement() {
+    local target_id="$1" system_name="$2"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    local owner
+
+    [[ -d "$lock_dir" ]] || return 1
+    owner=$(get_engagement_owner "$target_id" 2>/dev/null || true)
+    [[ "$owner" == "$system_name" ]] || return 1
+
+    printf "%s\n" "$$" > "$lock_dir/pid"
+    touch "$lock_dir" 2>/dev/null || true
+}
+
+release_target_engagement() {
+    local target_id="$1" system_name="${2:-}"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    local owner
+
+    [[ -d "$lock_dir" ]] || return 0
+    owner=$(get_engagement_owner "$target_id" 2>/dev/null || true)
+    if [[ -n "$system_name" && -n "$owner" && "$owner" != "$system_name" ]]; then
+        return 1
+    fi
+
+    rm -rf "$lock_dir"
+}
+
+claim_target_engagement() {
+    local target_id="$1" system_name="$2"
+    local lock_dir="$ENGAGEMENT_DIR/$target_id"
+    local owner owner_pid now_s lock_age
+
+    mkdir -p "$ENGAGEMENT_DIR"
+
+    if mkdir "$lock_dir" 2>/dev/null; then
+        printf "%s\n" "$system_name" > "$lock_dir/owner"
+        printf "%s\n" "$$" > "$lock_dir/pid"
+        return 0
+    fi
+
+    owner=$(get_engagement_owner "$target_id" 2>/dev/null || true)
+    if [[ "$owner" == "$system_name" ]]; then
+        refresh_target_engagement "$target_id" "$system_name"
+        return 0
+    fi
+
+    owner_pid=$(get_engagement_pid "$target_id" 2>/dev/null || true)
+    if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
+        return 1
+    fi
+
+    now_s=$(date +%s)
+    lock_age=$(( now_s - $(stat -c %Y "$lock_dir" 2>/dev/null || stat -f %m "$lock_dir" 2>/dev/null || echo "$now_s") ))
+    if (( lock_age > TARGET_RETRY_HOLD_SECONDS )); then
+        rm -rf "$lock_dir"
+        if mkdir "$lock_dir" 2>/dev/null; then
+            printf "%s\n" "$system_name" > "$lock_dir/owner"
+            printf "%s\n" "$$" > "$lock_dir/pid"
+            return 0
+        fi
+    fi
+
+    return 1
+}
 
 decode_target_id() {
     local filename="$1"
@@ -276,43 +372,113 @@ get_latest_fresh_target_mtime() {
     local latest_mtime current_time
 
     latest_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null) || return 1
-    current_time=$(date +%s%3N 2>/dev/null || echo $(( $(date +%s) * 1000 )))
+    current_time=$(current_time_ms)
 
     (( current_time - latest_mtime > TARGET_STALE_SECONDS * 1000 )) && return 1
     echo "$latest_mtime"
 }
 
+current_time_ms() {
+    local now_ms
+    now_ms=$(date +%s%3N 2>/dev/null)
+    if [[ "$now_ms" =~ ^[0-9]+$ ]]; then
+        echo "$now_ms"
+    else
+        echo $(( $(date +%s) * 1000 ))
+    fi
+}
+
+write_shot_result() {
+    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" result="$5" result_dir="$6" destroyed_by="${7:-}"
+    local result_msg kp_message=""
+
+    if [[ "$result" == "MISS" ]]; then
+        result_msg="ПРОМАХ по цели id:$target_id"
+        kp_message="MISS $target_id $shot_type"
+    elif [[ "$result" == "DESTROYED" ]]; then
+        mark_target_destroyed "$target_id" "$system_name"
+        result_msg="Цель id:$target_id УНИЧТОЖЕНА"
+        kp_message="DESTROYED $target_id $shot_type"
+    else
+        result_msg="Цель id:$target_id уже уничтожена системой ${destroyed_by:-UNKNOWN}"
+    fi
+
+    log_message "$logfile" "$system_name" "$result_msg"
+    if [[ -n "$kp_message" ]]; then
+        send_to_kp "$system_name" "$kp_message"
+    fi
+    echo "[$system_name] $result_msg"
+    printf "%s\n" "$result" > "$result_dir/${system_name}_${target_id}"
+}
+
+get_generator_log_position() {
+    wc -l < "$GEN_TARGETS_LOG" 2>/dev/null || echo 0
+}
+
+get_generator_result_since() {
+    local start_line="$1" target_id="$2" system_name="$3"
+    local from_line line
+
+    [[ -f "$GEN_TARGETS_LOG" ]] || return 1
+    from_line=$((start_line + 1))
+
+    while IFS= read -r line; do
+        [[ "$line" == *"$target_id"* ]] || continue
+        [[ "$line" == *"$system_name"* ]] || continue
+
+        if [[ "$line" == *"Промах"* ]]; then
+            echo "MISS"
+            return 0
+        fi
+
+        if [[ "$line" == *"Уничтожена"* ]]; then
+            echo "DESTROYED"
+            return 0
+        fi
+    done < <(sed -n "${from_line},\$p" "$GEN_TARGETS_LOG" 2>/dev/null)
+
+    return 1
+}
+
 track_shot_result_async() {
-    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" observed_mtime="$5"
+    local system_name="$1" logfile="$2" target_id="$3" shot_type="$4" observed_mtime="$5" generator_log_start="${6:-0}"
     local result_dir="$TEMP_DIR/shot_results"
     mkdir -p "$result_dir"
 
     (
-        sleep "$SHOT_RESULT_DELAY"
+        local start_ms failsafe_deadline_ms now_ms generator_result result="" destroyed_by=""
 
-        local first_post_shot_mtime second_post_shot_mtime miss_msg destroy_msg
-        first_post_shot_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
+        start_ms=$(current_time_ms)
+        failsafe_deadline_ms=$((start_ms + SHOT_RESULT_FAILSAFE_WAIT * 1000))
 
-        if (( first_post_shot_mtime > observed_mtime )); then
-            sleep "$SHOT_RESULT_CONFIRM_DELAY"
-            second_post_shot_mtime=$(get_latest_target_mtime "$target_id" 2>/dev/null || echo 0)
-        else
-            second_post_shot_mtime=$first_post_shot_mtime
+        if (( SHOT_RESULT_DELAY > 0 )); then
+            sleep "$SHOT_RESULT_DELAY"
         fi
 
-        if (( second_post_shot_mtime > first_post_shot_mtime )); then
-            miss_msg="ПРОМАХ по цели id:$target_id"
-            log_message "$logfile" "$system_name" "$miss_msg"
-            send_to_kp "$system_name" "MISS $target_id $shot_type"
-            echo "[$system_name] $miss_msg"
-            printf "MISS\n" > "$result_dir/${system_name}_${target_id}"
-        else
-            destroy_msg="Цель id:$target_id УНИЧТОЖЕНА"
-            log_message "$logfile" "$system_name" "$destroy_msg"
-            send_to_kp "$system_name" "DESTROYED $target_id $shot_type"
-            echo "[$system_name] $destroy_msg"
-            printf "DESTROYED\n" > "$result_dir/${system_name}_${target_id}"
-        fi
+        while [[ -z "$result" ]]; do
+            destroyed_by=$(get_target_destroyed_by "$target_id" 2>/dev/null || true)
+            if [[ -n "$destroyed_by" && "$destroyed_by" != "$system_name" ]]; then
+                result="ALREADY_DESTROYED"
+                break
+            fi
+
+            generator_result=$(get_generator_result_since "$generator_log_start" "$target_id" "$system_name" 2>/dev/null || true)
+            if [[ "$generator_result" == "MISS" || "$generator_result" == "DESTROYED" ]]; then
+                result="$generator_result"
+                break
+            fi
+
+            now_ms=$(current_time_ms)
+
+            if (( now_ms >= failsafe_deadline_ms )); then
+                result="MISS"
+                break
+            fi
+
+            sleep "$SHOT_RESULT_POLL_INTERVAL"
+        done
+
+        write_shot_result "$system_name" "$logfile" "$target_id" "$shot_type" "$result" "$result_dir" "$destroyed_by"
     ) &
 }
 
@@ -330,12 +496,16 @@ get_file_mtime() {
 scan_targets() {
     declare -A latest_files
     declare -A latest_times
-    local current_time
+    local current_time current_time_s scan_from scan_margin
     current_time=$(date +%s%3N 2>/dev/null || echo $(( $(date +%s) * 1000 )))
+    current_time_s=$(date +%s)
+    scan_margin="${TARGET_SCAN_MARGIN_SECONDS:-2}"
+    scan_from=$(( current_time_s - TARGET_STALE_SECONDS - scan_margin ))
+    (( scan_from < 0 )) && scan_from=0
 
     local f decoded_id ftime
 
-    for f in "$TARGETS_DIR"/*; do
+    while IFS= read -r f; do
         [[ -f "$f" ]] || continue
         decoded_id=$(decode_target_id "$f")
         [[ -z "$decoded_id" ]] && continue
@@ -345,7 +515,10 @@ scan_targets() {
             latest_times[$decoded_id]=$ftime
             latest_files[$decoded_id]="$f"
         fi
-    done
+    done < <(
+        find "$TARGETS_DIR" -maxdepth 1 -type f -newermt "@$scan_from" -print 2>/dev/null ||
+        find "$TARGETS_DIR" -maxdepth 1 -type f -print 2>/dev/null
+    )
 
     for decoded_id in "${!latest_files[@]}"; do
         (( current_time - ${latest_times[$decoded_id]} > TARGET_STALE_SECONDS * 1000 )) && continue
@@ -358,10 +531,45 @@ scan_targets() {
     done
 }
 
+get_latest_target_mark() {
+    local target_id="$1"
+    local latest_file="" latest_time=0
+    local f ftime coords hex_id pattern i
+
+    hex_id=$(printf '%s' "$target_id" | xxd -p | tr -d '\n')
+    [[ -n "$hex_id" ]] || return 1
+
+    pattern=""
+    for ((i = 0; i < ${#hex_id}; i += 2)); do
+        pattern+="??${hex_id:$i:2}"
+    done
+    pattern+="??"
+
+    for f in "$TARGETS_DIR"/$pattern; do
+        [[ -f "$f" ]] || continue
+
+        coords=$(read_target_coords "$f")
+        [[ -z "$coords" ]] && continue
+
+        ftime=$(get_file_mtime "$f")
+        if (( ftime > latest_time )); then
+            latest_time=$ftime
+            latest_file="$f"
+        fi
+    done
+
+    [[ -n "$latest_file" ]] || return 1
+    coords=$(read_target_coords "$latest_file")
+    [[ -n "$coords" ]] || return 1
+    echo "$coords $latest_time"
+}
+
 get_latest_two_visible_marks() {
     local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
     local latest_file="" latest_time=0 prev_file="" prev_time=0
-    local f decoded_id ftime coords tx ty
+    local f decoded_id ftime coords tx ty current_time
+
+    current_time=$(current_time_ms)
 
     for f in "$TARGETS_DIR"/*; do
         [[ -f "$f" ]] || continue
@@ -386,6 +594,7 @@ get_latest_two_visible_marks() {
     done
 
     [[ -z "$prev_file" || -z "$latest_file" ]] && return 1
+    (( current_time - latest_time > TARGET_STALE_SECONDS * 1000 )) && return 1
 
     local prev_coords latest_coords
     prev_coords=$(read_target_coords "$prev_file")
@@ -400,6 +609,42 @@ get_latest_two_visible_marks() {
     fi
 
     echo "$prev_coords $prev_time $latest_coords $latest_time"
+}
+
+get_latest_visible_mark() {
+    local mode="$1" target_id="$2" cx="$3" cy="$4" range="$5" angle="${6:-0}" sector="${7:-360}"
+    local latest_file="" latest_time=0
+    local f decoded_id ftime coords tx ty current_time
+
+    current_time=$(current_time_ms)
+
+    for f in "$TARGETS_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        decoded_id=$(decode_target_id "$f")
+        [[ "$decoded_id" != "$target_id" ]] && continue
+
+        coords=$(read_target_coords "$f")
+        [[ -z "$coords" ]] && continue
+        read -r tx ty <<< "$coords"
+
+        if [[ "$mode" == "sector" ]]; then
+            is_in_sector "$cx" "$cy" "$range" "$angle" "$sector" "$tx" "$ty" || continue
+        else
+            is_in_range "$cx" "$cy" "$range" "$tx" "$ty" || continue
+        fi
+
+        ftime=$(get_file_mtime "$f")
+        if (( ftime > latest_time )); then
+            latest_time=$ftime
+            latest_file="$f"
+        fi
+    done
+
+    [[ -n "$latest_file" ]] || return 1
+    (( current_time - latest_time > TARGET_STALE_SECONDS * 1000 )) && return 1
+    coords=$(read_target_coords "$latest_file")
+    [[ -n "$coords" ]] || return 1
+    echo "$coords $latest_time"
 }
 
 db_insert() {

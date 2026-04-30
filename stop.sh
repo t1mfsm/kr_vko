@@ -3,6 +3,11 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
+if [[ $EUID -eq 0 ]]; then
+    echo "ОШИБКА: Запуск от имени root запрещен!" >&2
+    exit 1
+fi
+
 if [[ -z "$BASH_VERSION" ]]; then
     echo "ОШИБКА: Требуется интерпретатор Bash!" >&2
     exit 1
